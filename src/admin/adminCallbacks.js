@@ -1386,6 +1386,100 @@ async function handleAdminCallback(bot, query) {
     return;
   }
 
+  // ─── Panels (Multi-panel overview) ─────────────────────────
+  if (data === 'admin_panels') {
+    const xuiClient = require('../vpn/xuiClient');
+    const { premiumClient } = require('../vpn/xuiClient');
+    let text = `🖥 <b>Panels Overview</b>\n\n`;
+
+    // Trial Panel
+    try {
+      const status = await xuiClient.getServerStatus();
+      if (status && status.obj) {
+        const s = status.obj;
+        const cpuUsed = s.cpu ? s.cpu.toFixed(1) : 'N/A';
+        const memUsed = s.mem ? ((s.mem.current / s.mem.total) * 100).toFixed(1) : 'N/A';
+        text += `🟢 <b>Trial Panel</b>\n`;
+        text += `  🌐 URL: <code>${process.env.XUI_PANEL_URL || 'N/A'}</code>\n`;
+        text += `  💻 CPU: ${cpuUsed}%  |  RAM: ${memUsed}%\n\n`;
+      } else {
+        text += `🔴 <b>Trial Panel</b> — ချိတ်ဆက်မရပါ\n\n`;
+      }
+    } catch {
+      text += `🔴 <b>Trial Panel</b> — ချိတ်ဆက်မရပါ\n\n`;
+    }
+
+    // Premium Panel
+    if (process.env.PREMIUM_XUI_PANEL_URL) {
+      try {
+        const pStatus = await premiumClient.getServerStatus();
+        if (pStatus && pStatus.obj) {
+          const s = pStatus.obj;
+          const cpuUsed = s.cpu ? s.cpu.toFixed(1) : 'N/A';
+          const memUsed = s.mem ? ((s.mem.current / s.mem.total) * 100).toFixed(1) : 'N/A';
+          text += `🟢 <b>Premium Panel</b>\n`;
+          text += `  🌐 URL: <code>${process.env.PREMIUM_XUI_PANEL_URL}</code>\n`;
+          text += `  💻 CPU: ${cpuUsed}%  |  RAM: ${memUsed}%\n\n`;
+        } else {
+          text += `🔴 <b>Premium Panel</b> — ချိတ်ဆက်မရပါ\n\n`;
+        }
+      } catch {
+        text += `🔴 <b>Premium Panel</b> — ချိတ်ဆက်မရပါ\n\n`;
+      }
+    } else {
+      text += `⚠️ <b>Premium Panel</b> — မသတ်မှတ်ရသေး\n`;
+      text += `  <i>PREMIUM_XUI_PANEL_URL .env ထဲ ထည့်ပါ</i>\n\n`;
+    }
+
+    return bot.editMessageText(text, {
+      chat_id: chatId, message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🌐 X-UI Panel Manage', callback_data: 'xui_menu' }],
+          [{ text: '« Admin Menu', callback_data: 'admin_menu' }],
+        ],
+      },
+    });
+  }
+
+  // ─── Premium Control ──────────────────────────────────────
+  if (data === 'admin_premium_control') {
+    const { premiumClient } = require('../vpn/xuiClient');
+    const { getCreditSettings } = require('../vpn/creditManager');
+    const settings = getCreditSettings();
+
+    let text = `💎 <b>Premium Control</b>\n\n`;
+    text += `<b>Premium Panel:</b> ${process.env.PREMIUM_XUI_PANEL_URL ? `<code>${process.env.PREMIUM_XUI_PANEL_URL}</code>` : '⚠️ မသတ်မှတ်ရသေး'}\n`;
+    text += `<b>Server Host:</b> <code>${process.env.PREMIUM_XUI_SERVER_HOST || '⚠️ မသတ်မှတ်ရသေး'}</code>\n\n`;
+    text += `<b>💎 Premium Plans (Credit):</b>\n`;
+    for (const p of settings.premiumPlans) {
+      text += `  • ${p.name}: ${p.dataGB}GB / ${p.days}d — ${p.credits} Credit (${p.ipLimit} device)\n`;
+    }
+
+    let activeKeys = 0;
+    try {
+      const premClients = await premiumClient.getAllClients();
+      const now = Date.now();
+      activeKeys = premClients.filter(c => c.enable && (c.expiryTime === 0 || c.expiryTime > now)).length;
+      text += `\n<b>🔑 Active Premium Keys:</b> ${activeKeys}`;
+    } catch {
+      text += `\n<i>Premium panel ချိတ်ဆက်မရပါ</i>`;
+    }
+
+    return bot.editMessageText(text, {
+      chat_id: chatId, message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '💎 Premium Plans ပြင်', callback_data: 'admin_set_premium_plans' }],
+          [{ text: '💰 Credit Manage', callback_data: 'admin_credit_manage' }],
+          [{ text: '« Admin Menu', callback_data: 'admin_menu' }],
+        ],
+      },
+    });
+  }
+
   // ─── Key Extend: Prompt for email ─────────────────────────
   if (data === 'admin_key_extend') {
     broadcastState[`extend_${userId}`] = true;
