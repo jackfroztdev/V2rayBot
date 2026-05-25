@@ -3,7 +3,8 @@ const crypto = require('crypto');
 
 class XUIClient {
   constructor() {
-    this.baseUrl = process.env.XUI_PANEL_URL || '';
+    // Strip trailing slash to avoid double-slash in URL paths (supports subpath panels)
+    this.baseUrl = (process.env.XUI_PANEL_URL || '').replace(/\/+$/, '');
     this.username = process.env.XUI_USERNAME || '';
     this.password = process.env.XUI_PASSWORD || '';
     this.cookie = null;
@@ -86,12 +87,18 @@ class XUIClient {
 
   // ─── Server Status ─────────────────────────────────────────
   async getServerStatus() {
-    return await this.request('get', '/panel/api/server/status');
+    return await this.request('get', '/xui/API/server/status');
   }
 
   // ─── Inbound Management ────────────────────────────────────
   async listInbounds() {
-    return await this.request('get', '/panel/api/inbounds/list');
+    // Returns array directly under 'obj' key
+    const result = await this.request('get', '/xui/API/inbounds');
+    // Normalize response: wrap array in {success, obj} if needed
+    if (Array.isArray(result)) {
+      return { success: true, obj: result };
+    }
+    return result;
   }
 
   async getInbound(id) {
@@ -103,11 +110,11 @@ class XUIClient {
   }
 
   async addInbound(inboundConfig) {
-    return await this.request('post', '/panel/api/inbounds/add', inboundConfig);
+    return await this.request('post', '/xui/inbound/add', inboundConfig);
   }
 
   async deleteInbound(id) {
-    return await this.request('post', `/panel/api/inbounds/del/${id}`);
+    return await this.request('post', `/xui/inbound/del/${id}`);
   }
 
   // ─── Client Management ─────────────────────────────────────
@@ -116,11 +123,11 @@ class XUIClient {
       id: inboundId,
       settings: JSON.stringify({ clients: [clientConfig] }),
     };
-    return await this.request('post', '/panel/api/inbounds/addClient', data);
+    return await this.request('post', '/xui/inbound/addClient', data);
   }
 
   async deleteClient(inboundId, clientUuid) {
-    return await this.request('post', `/panel/api/inbounds/${inboundId}/delClient/${clientUuid}`);
+    return await this.request('post', `/xui/inbound/${inboundId}/delClient/${clientUuid}`);
   }
 
   async updateClient(clientUuid, inboundId, clientConfig) {
@@ -140,11 +147,11 @@ class XUIClient {
 
     const updateData = { ...inbound, settings: JSON.stringify(settings) };
     delete updateData.clientStats;
-    return await this.request('post', `/panel/api/inbounds/update/${inboundId}`, updateData);
+    return await this.request('post', `/xui/inbound/update/${inboundId}`, updateData);
   }
 
   async resetClientTraffic(inboundId, email) {
-    return await this.request('post', `/panel/api/inbounds/${inboundId}/resetClientTraffic/${email}`);
+    return await this.request('post', `/xui/inbound/${inboundId}/resetClientTraffic/${email}`);
   }
 
   // ─── Helper: Create VMess Inbound ──────────────────────────
@@ -368,7 +375,8 @@ class XUIClient {
 class PremiumXUIClient extends XUIClient {
   constructor() {
     super();
-    this.baseUrl = process.env.PREMIUM_XUI_PANEL_URL || '';
+    // Strip trailing slash to avoid double-slash in URL paths (supports subpath panels)
+    this.baseUrl = (process.env.PREMIUM_XUI_PANEL_URL || '').replace(/\/+$/, '');
     this.username = process.env.PREMIUM_XUI_USERNAME || '';
     this.password = process.env.PREMIUM_XUI_PASSWORD || '';
     this.cookie = null;
