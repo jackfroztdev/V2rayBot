@@ -20,6 +20,14 @@ async function handleCallback(bot, query) {
 
   // ─── Main Menu ─────────────────────────────────────────────
   if (data === 'back_to_menu') {
+    // If current message is a photo (QR code), delete it and send a new text message
+    if (query.message.photo || query.message.document) {
+      await bot.deleteMessage(chatId, messageId).catch(() => {});
+      return bot.sendMessage(chatId, '🔐 *VPN Key Bot*\n\nရွေးချယ်ပါ:', {
+        parse_mode: 'Markdown',
+        reply_markup: getMainMenuKeyboard(),
+      });
+    }
     return bot.editMessageText('🔐 *VPN Key Bot*\n\nရွေးချယ်ပါ:', {
       chat_id: chatId, message_id: messageId,
       parse_mode: 'Markdown',

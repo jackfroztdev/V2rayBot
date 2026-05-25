@@ -1,6 +1,7 @@
 node_modules/
 .env
-data/keys.json
-data/servers.json
-data/users.json
-data/trials.json
+
+# All runtime data files - each VPS has its own separate database
+# Do NOT commit these to git to prevent data mixing between VPS instances
+data/*.json
+!data/.gitkeep
