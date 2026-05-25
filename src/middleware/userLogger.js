@@ -10,8 +10,8 @@ function getLogChannel() {
       if (data.channelId) return data.channelId;
     }
   } catch (e) { /* ignore */ }
-  // Fall back to env var
-  return process.env.USER_LOG_CHANNEL || '';
+  // Fall back to env var (support both LOG_CHANNEL and USER_LOG_CHANNEL)
+  return process.env.LOG_CHANNEL || process.env.USER_LOG_CHANNEL || '';
 }
 
 function setLogChannel(channelId) {

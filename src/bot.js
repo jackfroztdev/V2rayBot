@@ -1130,3 +1130,31 @@ bot.on('polling_error', (error) => {
 bot.on('error', (error) => {
   console.error('Bot error:', error.code, error.message);
 });
+
+// ─── Enhanced Error Logging to Log Channel ───────────────────
+async function sendErrorToLogChannel(label, error) {
+  const logCh = getLogChannel();
+  if (!logCh) return;
+  const now = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Yangon' });
+  const errMsg = String(error && error.message ? error.message : error).substring(0, 800);
+  const text =
+    `⚠️ <b>Bot Error</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `📌 <b>${label}</b>\n` +
+    `🗓 ${now} MMT\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `🚨 <code>${errMsg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code>`;
+  try {
+    await bot.sendMessage(logCh, text, { parse_mode: 'HTML' });
+  } catch (e) { /* silent */ }
+}
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  sendErrorToLogChannel('Uncaught Exception', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+  sendErrorToLogChannel('Unhandled Rejection', reason);
+});
