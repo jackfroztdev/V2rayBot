@@ -10,7 +10,7 @@ function getAdminMenuKeyboard() {
         { text: '📢 Broadcast', callback_data: 'admin_broadcast' },
       ],
       [
-        { text: '🖥 Panels', callback_data: 'admin_panels' },
+        { text: '🖥 Panels', callback_data: 'pm_list' },
         { text: '🌐 X-UI Panel', callback_data: 'xui_menu' },
       ],
       [
@@ -48,13 +48,14 @@ function getAdminMenuKeyboard() {
 }
 
 function getAdminServerKeyboard(servers) {
+  const typeIcon = { trial: '🎁', premium: '💎', both: '🔷' };
   const buttons = servers.map((s) => [
     {
-      text: `${s.status === 'online' ? '🟢' : '🔴'} ${s.name}`,
+      text: `${s.status === 'online' ? '🟢' : '🔴'} ${typeIcon[s.type] || '🖥'} ${s.name}`,
       callback_data: `admsrv_${s.id}`,
     },
   ]);
-  buttons.push([{ text: '➕ Add Server', callback_data: 'admin_addserver' }]);
+  buttons.push([{ text: '➕ Server ထည့်မယ်', callback_data: 'admsrv_add' }]);
   buttons.push([{ text: '« Admin Menu', callback_data: 'admin_menu' }]);
   return { inline_keyboard: buttons };
 }
@@ -63,13 +64,21 @@ function getAdminServerActionsKeyboard(serverId) {
   return {
     inline_keyboard: [
       [
-        { text: '🟢 Set Online', callback_data: `admsrvset_online_${serverId}` },
-        { text: '🔴 Set Offline', callback_data: `admsrvset_offline_${serverId}` },
+        { text: '✏️ Name ပြင်', callback_data: `admsrv_ename_${serverId}` },
+        { text: '🔄 Type ပြောင်း', callback_data: `admsrv_chtype_${serverId}` },
       ],
       [
-        { text: '🗑 Remove Server', callback_data: `admsrvdel_${serverId}` },
+        { text: '🔗 Panel ချိတ်', callback_data: `admsrv_linkpanel_${serverId}` },
+        { text: '📋 Inbound ရွေး', callback_data: `admsrv_linkinb_${serverId}` },
       ],
-      [{ text: '« Back to Servers', callback_data: 'admin_servers' }],
+      [
+        { text: '🟢 Online', callback_data: `admsrvset_online_${serverId}` },
+        { text: '🔴 Offline', callback_data: `admsrvset_offline_${serverId}` },
+      ],
+      [
+        { text: '🗑 ဖျက်မယ်', callback_data: `admsrvdel_${serverId}` },
+      ],
+      [{ text: '« Servers', callback_data: 'admin_servers' }],
     ],
   };
 }

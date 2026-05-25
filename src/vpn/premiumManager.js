@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const xuiClient = require('./xuiClient');
+const { getFirstPremiumPanel, getClient } = require('./panelManager');
 
 const DATA_DIR = path.join(__dirname, '../../data');
 const PREMIUM_FILE = path.join(DATA_DIR, 'premium.json');
@@ -161,24 +162,43 @@ async function approveOrder(orderId) {
     if (!plan) return { success: false, msg: 'Plan not found' };
 
     try {
-      const inboundId = parseInt(process.env.TRIAL_INBOUND_ID) || 1;
-      const inbound = await xuiClient.getInbound(inboundId);
-      if (!inbound) return { success: false, msg: 'Inbound not found' };
+      // Find first configured premium server with panel + inbound (check all protocols)
+      const { getAllProtocols, getProtocolServers } = require('./premiumConfig');
+      const { getPanel: getPanelById } = require('./panelManager');
+      let premServers = [];
+      for (const proto of getAllProtocols()) {
+        premServers = premServers.concat(getProtocolServers(proto).filter(s => s.panelId && s.inboundId && s.status === 'online'));
+      }
 
-      const email = `premium_${userId}_${Date.now()}`;
-      const clientConfig = xuiClient.createClientConfig(email, {
+      if (premServers.length === 0) {
+        return { success: false, msg: 'No premium server configured with panel/inbound' };
+      }
+
+      const server = premServers[0];
+      const panel = getPanelById(server.panelId);
+      const activeClient = panel ? getClient(panel.id) : xuiClient;
+      const serverHost = panel ? panel.serverHost : (process.env.XUI_SERVER_HOST || '');
+
+      const inbound = await activeClient.getInbound(server.inboundId);
+      if (!inbound) return { success: false, msg: 'Inbound not found on panel' };
+
+      const crypto = require('crypto');
+      const shortId = crypto.randomBytes(3).toString('hex');
+      const email = `premium_${userId}_${shortId}`;
+      const inboundSettings = JSON.parse(inbound.settings);
+      const clientConfig = activeClient.createClientConfig(email, {
         expiryDays: plan.days,
         totalGB: plan.dataGB * 1024 * 1024 * 1024,
         limitIp: plan.ipLimit,
         tgId: String(userId),
         protocol: inbound.protocol,
+        method: inboundSettings.method || 'aes-256-gcm',
       });
 
-      const res = await xuiClient.addClient(inboundId, clientConfig);
+      const res = await activeClient.addClient(server.inboundId, clientConfig);
       if (!res.success) return { success: false, msg: res.msg || 'Failed to create key' };
 
-      const serverHost = process.env.XUI_SERVER_HOST || '178.128.80.123';
-      const link = xuiClient.generateLink(inbound, clientConfig, serverHost);
+      const link = activeClient.generateLink(inbound, clientConfig, serverHost);
 
       order.status = 'approved';
       order.approvedAt = new Date().toISOString();
@@ -186,19 +206,15 @@ async function approveOrder(orderId) {
       order.link = link;
       saveOrders(data);
 
-      // Save to premium keys
       const premData = loadPremiumKeys();
       if (!premData.keys[userId]) {
         premData.keys[userId] = [];
       }
       premData.keys[userId].push({
-        email,
-        link,
-        planId: plan.id,
-        planName: plan.name,
-        dataGB: plan.dataGB,
-        days: plan.days,
-        orderId,
+        email, link, planId: plan.id, planName: plan.name,
+        dataGB: plan.dataGB, days: plan.days, orderId,
+        server: server.name, serverHost, inboundId: server.inboundId,
+        panelId: server.panelId, protocol: inbound.protocol,
         createdAt: new Date().toISOString(),
       });
       savePremiumKeys(premData);

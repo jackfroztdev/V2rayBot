@@ -4,6 +4,7 @@ const { getPlans, createOrder, getUserPremiumKeys } = require('./vpn/premiumMana
 const { getUserReferral, getReferralCode, getReferralConfig } = require('./vpn/referralManager');
 const { getBalance, getUserCredits, deductCredits, getCreditSettings, redeemCoupon } = require('./vpn/creditManager');
 const xuiClient = require('./vpn/xuiClient');
+const { getFirstPremiumPanel, getClient } = require('./vpn/panelManager');
 const { getUser } = require('./admin/userManager');
 const { logUserAction, logKeyClaimWithQR } = require('./middleware/userLogger');
 const { getUserLang, setUserLang } = require('./middleware/language');
@@ -202,12 +203,121 @@ async function handleCallback(bot, query) {
     );
   }
 
+  // ─── Premium Buy: Step 1 - Protocol Selection ─────────────
   if (data.startsWith('premium_buy_credit_')) {
     const planId = data.replace('premium_buy_credit_', '');
     const settings = getCreditSettings();
     const plan = settings.premiumPlans.find(p => p.id === planId);
     if (!plan) {
       return bot.editMessageText('❌ Plan မတွေ့ပါ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: getBackKeyboard(),
+      });
+    }
+
+    const balance = getBalance(userId);
+    if (balance < plan.credits) {
+      return bot.editMessageText('❌ Credit မလုံလောက်ပါ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: getBackKeyboard(),
+      });
+    }
+
+    return bot.editMessageText(
+      `💎 <b>${plan.name}</b>\n\n` +
+      `Key အမျိုးအစား ရွေးပါ:`,
+      {
+        chat_id: chatId, message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔒 Shadowsocks', callback_data: `prem_proto_${planId}_shadowsocks` }],
+            [{ text: '⚡ VLESS', callback_data: `prem_proto_${planId}_vless` }],
+            [{ text: '🌐 VMess', callback_data: `prem_proto_${planId}_vmess` }],
+            [{ text: '« Back', callback_data: `premium_credit_${planId}` }],
+          ],
+        },
+      }
+    );
+  }
+
+  // ─── Premium Buy: Step 2 - Server Selection ───────────────
+  if (data.startsWith('prem_proto_')) {
+    const rest = data.replace('prem_proto_', '');
+    const lastUnderscore = rest.lastIndexOf('_');
+    const planId = rest.substring(0, lastUnderscore);
+    const protocol = rest.substring(lastUnderscore + 1);
+
+    const settings = getCreditSettings();
+    const plan = settings.premiumPlans.find(p => p.id === planId);
+    if (!plan) {
+      return bot.editMessageText('❌ Plan မတွေ့ပါ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: getBackKeyboard(),
+      });
+    }
+
+    const { getProtocolServers, getProtocolLabel } = require('./vpn/premiumConfig');
+    const servers = getProtocolServers(protocol).filter(s =>
+      s.status === 'online' && s.panelId && s.inboundId
+    );
+
+    if (servers.length === 0) {
+      return bot.editMessageText(
+        '❌ ဒီ protocol အတွက် server မရှိသေးပါ။\n\nAdmin ကနေ Premium Control → protocol → server ထည့်ပြီး panel/inbound ချိတ်ဖို့ လိုပါတယ်။',
+        {
+          chat_id: chatId, message_id: messageId,
+          reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premium_buy_credit_${planId}` }]] },
+        }
+      );
+    }
+
+    const protoLabel = { shadowsocks: '🔒 Shadowsocks', vless: '⚡ VLESS', vmess: '🌐 VMess' };
+    const buttons = servers.map(s => [{
+      text: `🖥 ${s.name}`,
+      callback_data: `prem_gen_${planId}_${protocol}_${s.id}`,
+    }]);
+    buttons.push([{ text: '« Back', callback_data: `premium_buy_credit_${planId}` }]);
+
+    return bot.editMessageText(
+      `💎 <b>${plan.name}</b> — ${protoLabel[protocol] || protocol}\n\nServer ရွေးပါ:`,
+      {
+        chat_id: chatId, message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons },
+      }
+    );
+  }
+
+  // ─── Premium Buy: Step 3 - Generate Key ───────────────────
+  if (data.startsWith('prem_gen_')) {
+    const rest = data.replace('prem_gen_', '');
+    const parts = rest.split('_');
+    // planId can contain underscores (e.g. cp_100), protocol is the second-to-last, serverId is last
+    const serverId = parseInt(parts[parts.length - 1]);
+    const protocol = parts[parts.length - 2];
+    const planId = parts.slice(0, parts.length - 2).join('_');
+
+    const settings = getCreditSettings();
+    const plan = settings.premiumPlans.find(p => p.id === planId);
+    if (!plan) {
+      return bot.editMessageText('❌ Plan မတွေ့ပါ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: getBackKeyboard(),
+      });
+    }
+
+    const { getProtocolServerById } = require('./vpn/premiumConfig');
+    const { getPanel: getPanelById } = require('./vpn/panelManager');
+    const server = getProtocolServerById(protocol, serverId);
+    if (!server || !server.panelId) {
+      return bot.editMessageText('❌ Server ကို panel ချိတ်မထားသေးပါ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: getBackKeyboard(),
+      });
+    }
+    if (!server.inboundId) {
+      return bot.editMessageText('❌ Server ကို inbound သတ်မှတ်မထားသေးပါ', {
         chat_id: chatId, message_id: messageId,
         reply_markup: getBackKeyboard(),
       });
@@ -226,43 +336,34 @@ async function handleCallback(bot, query) {
     });
 
     try {
-      const { premiumClient } = require('./vpn/xuiClient');
       const crypto = require('crypto');
-      const premServerHost = process.env.PREMIUM_XUI_SERVER_HOST || '209.97.171.125';
+      const panel = getPanelById(server.panelId);
+      const premClient = getClient(server.panelId);
+      const premServerHost = panel ? panel.serverHost : (process.env.PREMIUM_XUI_SERVER_HOST || '');
 
-      // Generate remark with username/userId and random port
-      const uname = (query.from.username || '').replace(/[^a-zA-Z0-9_]/g, '').substring(0, 8);
-      const remarkName = uname ? `${uname}_${userId}` : `${userId}`;
-      const remark = remarkName;
-      const randomPort = 10000 + Math.floor(Math.random() * 55000);
-      const ssMethod = 'chacha20-ietf-poly1305';
-      const ssPassword = crypto.randomBytes(16).toString('base64');
-
-      // Create a new SS inbound on premium panel with random port
-      const inboundRes = await premiumClient.createShadowsocksInbound(remark, randomPort, {
-        method: ssMethod,
-        password: ssPassword,
-      });
-      if (!inboundRes.success) {
-        return bot.editMessageText(`❌ ${inboundRes.msg || 'Failed to create inbound'}`, {
+      const inbound = await premClient.getInbound(server.inboundId);
+      if (!inbound) {
+        return bot.editMessageText('❌ Inbound not found on panel', {
           chat_id: chatId, message_id: messageId,
           reply_markup: getBackKeyboard(),
         });
       }
 
-      const newInboundId = inboundRes.obj.id;
-      const shortId = crypto.randomBytes(2).toString('hex');
-      const email = `p_${shortId}`;
-      const clientConfig = premiumClient.createClientConfig(email, {
+      const inboundSettings = JSON.parse(inbound.settings);
+      const shortId = crypto.randomBytes(3).toString('hex');
+      const uname = (query.from.username || '').replace(/[^a-zA-Z0-9_]/g, '').substring(0, 8);
+      const email = `p_${uname || userId}_${shortId}`;
+
+      const clientConfig = premClient.createClientConfig(email, {
         expiryDays: plan.days,
         totalGB: plan.dataGB * 1024 * 1024 * 1024,
         limitIp: plan.ipLimit || 2,
         tgId: String(userId),
-        protocol: 'shadowsocks',
-        method: ssMethod,
+        protocol: inbound.protocol,
+        method: inboundSettings.method || 'aes-256-gcm',
       });
 
-      const addRes = await premiumClient.addClient(newInboundId, clientConfig);
+      const addRes = await premClient.addClient(server.inboundId, clientConfig);
       if (!addRes.success) {
         return bot.editMessageText(`❌ ${addRes.msg || 'Failed to create key'}`, {
           chat_id: chatId, message_id: messageId,
@@ -270,28 +371,24 @@ async function handleCallback(bot, query) {
         });
       }
 
-      // Get the created inbound for link generation
-      const inbound = await premiumClient.getInbound(newInboundId);
-      const link = premiumClient.generateLink(inbound, clientConfig, premServerHost);
-
+      const link = premClient.generateLink(inbound, clientConfig, premServerHost);
       const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const expiryDate = new Date(Date.now() + plan.days * 86400000).toLocaleDateString('en-GB');
 
       logKeyClaimWithQR(bot, query.from, {
-        email,
-        dataGB: plan.dataGB,
-        expiryDate,
-        ipLimit: plan.ipLimit || 2,
-        link,
-        inbound: remark,
+        email, dataGB: plan.dataGB, expiryDate, ipLimit: plan.ipLimit || 2, link,
+        inbound: inbound.remark || '',
       }, 'Premium (Credit)');
 
-      // Save to premium keys
       const { savePremiumKey } = require('./vpn/premiumManager');
-      if (typeof savePremiumKey === 'function') {
-        savePremiumKey(userId, { email, link, planId: plan.id, planName: plan.name, dataGB: plan.dataGB, days: plan.days, server: premServerHost, inboundId: newInboundId });
-      }
+      savePremiumKey(userId, {
+        email, link, planId: plan.id, planName: plan.name,
+        dataGB: plan.dataGB, days: plan.days, server: server.name,
+        serverHost: premServerHost, inboundId: server.inboundId,
+        panelId: server.panelId, protocol: inbound.protocol,
+      });
 
+      const protoLabel = { shadowsocks: '🔒 SS', vless: '⚡ VLESS', vmess: '🌐 VMess' };
       const caption =
         `💎 <b>Premium Key ရရှိပါပြီ!</b>\n\n` +
         `📦 Plan: <b>${plan.name}</b>\n` +
@@ -299,23 +396,20 @@ async function handleCallback(bot, query) {
         `📦 Data: <b>${plan.dataGB} GB</b>\n` +
         `📱 Device: <b>${plan.ipLimit || 2}</b>\n` +
         `💰 Used: <b>${plan.credits} Credit</b>\n` +
-        `🔒 Method: <b>${ssMethod}</b>\n` +
-        `🌐 Port: <b>${randomPort}</b>\n\n` +
+        `🖥 Server: <b>${escHtml(server.name)}</b>\n` +
+        `🔒 Protocol: <b>${protoLabel[inbound.protocol] || inbound.protocol}</b>\n\n` +
         `🔗 <b>Config Link:</b>\n<code>${escHtml(link)}</code>`;
 
       try {
         const qrBuffer = await QRCode.toBuffer(link, { width: 300, margin: 2 });
         await bot.deleteMessage(chatId, messageId).catch(() => {});
         await bot.sendPhoto(chatId, qrBuffer, {
-          caption,
-          parse_mode: 'HTML',
-          reply_markup: getBackKeyboard(),
+          caption, parse_mode: 'HTML', reply_markup: getBackKeyboard(),
         });
       } catch {
         await bot.editMessageText(caption, {
           chat_id: chatId, message_id: messageId,
-          parse_mode: 'HTML',
-          reply_markup: getBackKeyboard(),
+          parse_mode: 'HTML', reply_markup: getBackKeyboard(),
         });
       }
     } catch (err) {
@@ -534,8 +628,19 @@ async function handleCallback(bot, query) {
     });
 
     try {
+      // Use server → panel chain for trial, fall back to panelManager or env var
+      const { getTrialConfig } = require('./vpn/trialManager');
+      const { getServerById } = require('./vpn/serverList');
+      const { getPanel: getPanelById, getFirstTrialPanel } = require('./vpn/panelManager');
+      const trialConfig = getTrialConfig();
+      const trialServer = trialConfig.serverId ? getServerById(trialConfig.serverId) : null;
+      const trialPanelId = (trialServer && trialServer.panelId) ? trialServer.panelId : trialConfig.panelId;
+      const trialPanel = trialPanelId ? getPanelById(trialPanelId) : getFirstTrialPanel();
+      const activeClient = trialPanel ? getClient(trialPanel.id) : xuiClient;
+      const serverHost = trialPanel ? trialPanel.serverHost : (process.env.XUI_SERVER_HOST || '178.128.80.123');
+
       const inboundId = settings.referralKeyInboundId || parseInt(process.env.TRIAL_INBOUND_ID) || 1;
-      const inbound = await xuiClient.getInbound(inboundId);
+      const inbound = await activeClient.getInbound(inboundId);
       if (!inbound) {
         return bot.editMessageText('❌ Inbound not found', {
           chat_id: chatId, message_id: messageId,
@@ -545,7 +650,7 @@ async function handleCallback(bot, query) {
 
       const inboundSettings = JSON.parse(inbound.settings);
       const email = `credit_${userId}_${Date.now()}`;
-      const clientConfig = xuiClient.createClientConfig(email, {
+      const clientConfig = activeClient.createClientConfig(email, {
         expiryDays: 30,
         totalGB: gb * 1024 * 1024 * 1024,
         limitIp: 1,
@@ -554,7 +659,7 @@ async function handleCallback(bot, query) {
         method: inboundSettings.method || 'aes-256-gcm',
       });
 
-      const res = await xuiClient.addClient(inboundId, clientConfig);
+      const res = await activeClient.addClient(inboundId, clientConfig);
       if (!res.success) {
         return bot.editMessageText(`❌ ${res.msg || 'Failed'}`, {
           chat_id: chatId, message_id: messageId,
@@ -562,8 +667,7 @@ async function handleCallback(bot, query) {
         });
       }
 
-      const serverHost = process.env.XUI_SERVER_HOST || '178.128.80.123';
-      const link = xuiClient.generateLink(inbound, clientConfig, serverHost);
+      const link = activeClient.generateLink(inbound, clientConfig, serverHost);
       const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const expiryDate = new Date(Date.now() + 30 * 86400000).toLocaleDateString('en-GB');
 

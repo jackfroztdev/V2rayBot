@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const xuiClient = require('./xuiClient');
+const { getFirstTrialPanel, getClient, getPanel } = require('./panelManager');
 
 const DATA_DIR = path.join(__dirname, '../../data');
 const TRIALS_FILE = path.join(DATA_DIR, 'trials.json');
@@ -51,9 +52,11 @@ function getTrialConfig() {
       ipLimit: saved.ipLimit || DEFAULT_CONFIG.ipLimit,
       maxTrials: saved.maxTrials || DEFAULT_CONFIG.maxTrials,
       customMessage: saved.customMessage || '',
+      serverId: saved.serverId || null,
+      panelId: saved.panelId || null,
     };
   }
-  return { ...DEFAULT_CONFIG, customMessage: '' };
+  return { ...DEFAULT_CONFIG, customMessage: '', serverId: null, panelId: null };
 }
 
 function updateTrialConfig(updates) {
@@ -111,7 +114,17 @@ async function createTrialKey(userId, username) {
   }
 
   try {
-    const inbound = await xuiClient.getInbound(config.inboundId);
+    // Look up server → panel chain; fall back to panelManager or env var
+    const { getServerById } = require('./serverList');
+    const server = config.serverId ? getServerById(config.serverId) : null;
+    const panelId = (server && server.panelId) ? server.panelId : config.panelId;
+    const trialPanel = panelId ? getPanel(panelId) : getFirstTrialPanel();
+    const client = trialPanel ? getClient(trialPanel.id) : xuiClient;
+    const serverHost = trialPanel ? trialPanel.serverHost : (process.env.XUI_SERVER_HOST || '178.128.80.123');
+    // If server has its own inboundId, override config
+    const inboundIdToUse = (server && server.inboundId) ? server.inboundId : config.inboundId;
+
+    const inbound = await client.getInbound(inboundIdToUse);
     if (!inbound) {
       return { success: false, msg: 'Inbound not found' };
     }
@@ -121,7 +134,7 @@ async function createTrialKey(userId, username) {
     const email = `t_${safeName}_${userId}_${suffix}`;
 
     const inboundSettings = JSON.parse(inbound.settings);
-    const clientConfig = xuiClient.createClientConfig(email, {
+    const clientConfig = client.createClientConfig(email, {
       expiryDays: config.expiryDays,
       totalGB: config.totalGB * 1024 * 1024 * 1024,
       limitIp: config.ipLimit,
@@ -130,14 +143,13 @@ async function createTrialKey(userId, username) {
       method: inboundSettings.method || 'aes-256-gcm',
     });
 
-    const res = await xuiClient.addClient(config.inboundId, clientConfig);
+    const res = await client.addClient(inboundIdToUse, clientConfig);
 
     if (!res.success) {
       return { success: false, msg: res.msg || 'Failed to create trial key' };
     }
 
-    const serverHost = process.env.XUI_SERVER_HOST || '178.128.80.123';
-    const link = xuiClient.generateLink(inbound, clientConfig, serverHost);
+    const link = client.generateLink(inbound, clientConfig, serverHost);
 
     const expiryDate = new Date(Date.now() + config.expiryDays * 24 * 60 * 60 * 1000);
 
@@ -149,6 +161,7 @@ async function createTrialKey(userId, username) {
       dataGB: config.totalGB,
       ipLimit: config.ipLimit,
       inboundRemark: inbound.remark || '',
+      panelId: trialPanel ? trialPanel.id : null,
     };
 
     recordTrial(userId, trialData);

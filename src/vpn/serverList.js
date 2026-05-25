@@ -5,79 +5,87 @@ const SERVERS_FILE = path.join(__dirname, '../../data/servers.json');
 
 function loadServers() {
   if (!fs.existsSync(SERVERS_FILE)) {
-    const defaultServers = {
-      servers: [
-        {
-          id: 1,
-          name: 'Singapore 1',
-          host: 'sg1.example.com',
-          port: 443,
-          country: 'SG',
-          status: 'online',
-          protocols: ['vmess', 'vless', 'shadowsocks'],
-        },
-        {
-          id: 2,
-          name: 'Japan 1',
-          host: 'jp1.example.com',
-          port: 443,
-          country: 'JP',
-          status: 'online',
-          protocols: ['vmess', 'vless', 'shadowsocks'],
-        },
-        {
-          id: 3,
-          name: 'US West 1',
-          host: 'usw1.example.com',
-          port: 443,
-          country: 'US',
-          status: 'online',
-          protocols: ['vmess', 'vless', 'shadowsocks'],
-        },
-        {
-          id: 4,
-          name: 'Germany 1',
-          host: 'de1.example.com',
-          port: 443,
-          country: 'DE',
-          status: 'online',
-          protocols: ['vmess', 'vless'],
-        },
-        {
-          id: 5,
-          name: 'Hong Kong 1',
-          host: 'hk1.example.com',
-          port: 443,
-          country: 'HK',
-          status: 'online',
-          protocols: ['vmess', 'vless', 'shadowsocks'],
-        },
-      ],
-    };
+    const defaultServers = { servers: [] };
+    const dir = path.dirname(SERVERS_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(SERVERS_FILE, JSON.stringify(defaultServers, null, 2));
     return defaultServers;
   }
   return JSON.parse(fs.readFileSync(SERVERS_FILE, 'utf8'));
 }
 
+function saveServers(data) {
+  const dir = path.dirname(SERVERS_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(SERVERS_FILE, JSON.stringify(data, null, 2));
+}
+
 function getServerList() {
-  const data = loadServers();
-  return data.servers;
+  return loadServers().servers;
 }
 
 function getServerById(id) {
-  const servers = getServerList();
-  return servers.find((s) => s.id === id) || null;
+  return getServerList().find((s) => s.id === id) || null;
 }
 
 function getOnlineServers() {
-  const servers = getServerList();
-  return servers.filter((s) => s.status === 'online');
+  return getServerList().filter((s) => s.status === 'online');
 }
 
 function getServersByProtocol(protocol) {
-  const servers = getOnlineServers();
-  return servers.filter((s) => s.protocols.includes(protocol));
+  return getOnlineServers().filter((s) => s.protocols && s.protocols.includes(protocol));
+}
+
+function addServer(serverData) {
+  const data = loadServers();
+  const maxId = data.servers.reduce((max, s) => Math.max(max, s.id), 0);
+  const newServer = {
+    id: maxId + 1,
+    name: serverData.name || 'New Server',
+    host: serverData.host || '',
+    port: serverData.port || 443,
+    country: serverData.country || '',
+    status: 'online',
+    protocols: serverData.protocols || ['vmess', 'vless', 'shadowsocks'],
+    panelId: serverData.panelId || null,
+    inboundId: serverData.inboundId || null,
+    type: serverData.type || 'trial',
+    createdAt: new Date().toISOString(),
+  };
+  data.servers.push(newServer);
+  saveServers(data);
+  return newServer;
+}
+
+function updateServer(serverId, updates) {
+  const data = loadServers();
+  const server = data.servers.find((s) => s.id === serverId);
+  if (!server) return null;
+  for (const key of Object.keys(updates)) {
+    if (key !== 'id') server[key] = updates[key];
+  }
+  server.updatedAt = new Date().toISOString();
+  saveServers(data);
+  return server;
+}
+
+function removeServer(serverId) {
+  const data = loadServers();
+  const before = data.servers.length;
+  data.servers = data.servers.filter((s) => s.id !== serverId);
+  if (data.servers.length < before) {
+    saveServers(data);
+    return true;
+  }
+  return false;
+}
+
+function getTrialServers() {
+  return getServerList().filter((s) => s.type === 'trial' || s.type === 'both');
+}
+
+function getPremiumServers() {
+  return getServerList().filter((s) => s.type === 'premium' || s.type === 'both');
 }
 
 function getCountryFlag(code) {
@@ -85,6 +93,7 @@ function getCountryFlag(code) {
     SG: '🇸🇬', JP: '🇯🇵', US: '🇺🇸', DE: '🇩🇪', HK: '🇭🇰',
     KR: '🇰🇷', TW: '🇹🇼', GB: '🇬🇧', FR: '🇫🇷', NL: '🇳🇱',
     CA: '🇨🇦', AU: '🇦🇺', IN: '🇮🇳', BR: '🇧🇷', RU: '🇷🇺',
+    MM: '🇲🇲', TH: '🇹🇭', VN: '🇻🇳', ID: '🇮🇩', PH: '🇵🇭',
   };
   return flags[code] || '🌐';
 }
@@ -97,9 +106,12 @@ function formatServerList(servers) {
     const flag = getCountryFlag(s.country);
     const status = s.status === 'online' ? '🟢' : '🔴';
     text += `${status} ${flag} *${s.name}*\n`;
-    text += `   Host: \`${s.host}\`\n`;
-    text += `   Port: \`${s.port}\`\n`;
-    text += `   Protocols: ${s.protocols.join(', ')}\n\n`;
+    if (s.host) text += `   Host: \`${s.host}\`\n`;
+    if (s.port) text += `   Port: \`${s.port}\`\n`;
+    if (s.protocols && s.protocols.length > 0) {
+      text += `   Protocols: ${s.protocols.join(', ')}\n`;
+    }
+    text += '\n';
   });
   return text;
 }
@@ -109,6 +121,11 @@ module.exports = {
   getServerById,
   getOnlineServers,
   getServersByProtocol,
+  addServer,
+  updateServer,
+  removeServer,
+  getTrialServers,
+  getPremiumServers,
   getCountryFlag,
   formatServerList,
 };

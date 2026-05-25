@@ -1,6 +1,7 @@
 const { isAdmin } = require('./auth');
 const { getAllUsers, getUser, banUser, unbanUser, getBannedUsers, getStats } = require('./userManager');
-const { getServerList, getServerById } = require('../vpn/serverList');
+const { getServerList, getServerById, addServer, updateServer, removeServer } = require('../vpn/serverList');
+const { getAllPanels, getPanel, getClient } = require('../vpn/panelManager');
 const {
   getAdminMenuKeyboard,
   getAdminServerKeyboard,
@@ -14,6 +15,9 @@ const { createBackup, listBackups, restoreBackup, deleteBackup, getBackupZipBuff
 const fs = require('fs');
 const path = require('path');
 const SERVERS_FILE = path.join(__dirname, '../../data/servers.json');
+
+// Server admin state for multi-step flows
+const serverAdminState = {};
 const BLACKLIST_FILE = path.join(__dirname, '../../data/blacklist.json');
 const MAINTENANCE_FILE = path.join(__dirname, '../../data/maintenance.json');
 
@@ -285,35 +289,218 @@ async function handleAdminCallback(bot, query) {
   // ─── Server Management ─────────────────────────────────────
   if (data === 'admin_servers') {
     const servers = getServerList();
-    return bot.editMessageText('🖥 *Manage Servers*', {
+    const panels = getAllPanels();
+    const escHtml = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const typeLabel = { trial: '🎁 Trial', premium: '💎 Premium', both: '🔷 Both' };
+
+    let text = `🖥 <b>Manage Servers</b> (${servers.length})\n\n`;
+    if (servers.length === 0) {
+      text += 'Server မရှိသေးပါ။ ➕ နှိပ်ပြီး ထည့်ပါ။';
+    } else {
+      servers.forEach((s) => {
+        const statusIcon = s.status === 'online' ? '🟢' : '🔴';
+        const panel = s.panelId ? panels.find(p => p.id === s.panelId) : null;
+        const panelName = panel ? panel.name : 'မချိတ်ရသေး';
+        text += `${statusIcon} <b>${escHtml(s.name)}</b> — ${typeLabel[s.type] || '🖥'}\n`;
+        text += `   🔗 Panel: ${escHtml(panelName)}`;
+        if (s.inboundId) text += ` | Inbound: ${s.inboundId}`;
+        text += '\n\n';
+      });
+    }
+
+    return bot.editMessageText(text, {
       chat_id: chatId, message_id: messageId,
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: getAdminServerKeyboard(servers),
     });
   }
 
-  if (data.startsWith('admsrv_')) {
+  // ─── Add Server ─────────────────────────────────────────────
+  if (data === 'admsrv_add') {
+    serverAdminState[userId] = { action: 'add_server', step: 'name' };
+    return bot.editMessageText(
+      '➕ <b>Server အသစ်ထည့်မယ်</b>\n\nServer name ရိုက်ထည့်ပါ:',
+      {
+        chat_id: chatId, message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'admin_servers' }]] },
+      }
+    );
+  }
+
+  // ─── Server Detail View ──────────────────────────────────────
+  if (data.startsWith('admsrv_') && !data.startsWith('admsrv_add') &&
+      !data.startsWith('admsrv_ename_') && !data.startsWith('admsrv_chtype_') &&
+      !data.startsWith('admsrv_linkpanel_') && !data.startsWith('admsrv_linkinb_') &&
+      !data.startsWith('admsrv_setpanel_') && !data.startsWith('admsrv_setinb_') &&
+      !data.startsWith('admsrv_settype_')) {
     const serverId = parseInt(data.replace('admsrv_', ''));
     const server = getServerById(serverId);
 
     if (!server) {
-      return bot.editMessageText('Server not found.', {
+      return bot.editMessageText('❌ Server မတွေ့ပါ', {
         chat_id: chatId, message_id: messageId,
-        reply_markup: getAdminBackKeyboard(),
+        reply_markup: getAdminServerKeyboard(getServerList()),
       });
     }
 
+    const panels = getAllPanels();
+    const panel = server.panelId ? panels.find(p => p.id === server.panelId) : null;
+    const escHtml = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const typeLabel = { trial: '🎁 Trial', premium: '💎 Premium', both: '🔷 Both' };
+
     const text =
-      `🖥 *Server: ${server.name}*\n\n` +
-      `*Host:* \`${server.host}\`\n` +
-      `*Port:* \`${server.port}\`\n` +
-      `*Country:* ${server.country}\n` +
-      `*Status:* ${server.status === 'online' ? '🟢 Online' : '🔴 Offline'}\n` +
-      `*Protocols:* ${server.protocols.join(', ')}\n`;
+      `🖥 <b>${escHtml(server.name)}</b>\n\n` +
+      `📋 <b>Type:</b> ${typeLabel[server.type] || '🖥 N/A'}\n` +
+      `📊 <b>Status:</b> ${server.status === 'online' ? '🟢 Online' : '🔴 Offline'}\n` +
+      `🔗 <b>Panel:</b> ${panel ? escHtml(panel.name) : 'မချိတ်ရသေး'}\n` +
+      `📋 <b>Inbound ID:</b> ${server.inboundId || 'မရွေးရသေး'}\n` +
+      (server.host ? `🌐 <b>Host:</b> <code>${escHtml(server.host)}</code>\n` : '') +
+      (server.country ? `🏳️ <b>Country:</b> ${server.country}\n` : '');
 
     return bot.editMessageText(text, {
       chat_id: chatId, message_id: messageId,
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
+      reply_markup: getAdminServerActionsKeyboard(serverId),
+    });
+  }
+
+  // ─── Server: Edit Name ──────────────────────────────────────
+  if (data.startsWith('admsrv_ename_')) {
+    const serverId = parseInt(data.replace('admsrv_ename_', ''));
+    serverAdminState[userId] = { action: 'edit_server_name', serverId };
+    return bot.editMessageText('✏️ Server name အသစ်ရိုက်ထည့်ပါ:', {
+      chat_id: chatId, message_id: messageId,
+      reply_markup: { inline_keyboard: [[{ text: '❌ Cancel', callback_data: `admsrv_${serverId}` }]] },
+    });
+  }
+
+  // ─── Server: Change Type ────────────────────────────────────
+  if (data.startsWith('admsrv_chtype_')) {
+    const serverId = parseInt(data.replace('admsrv_chtype_', ''));
+    return bot.editMessageText('🔄 Server type ရွေးပါ:', {
+      chat_id: chatId, message_id: messageId,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🎁 Trial', callback_data: `admsrv_settype_${serverId}_trial` }],
+          [{ text: '💎 Premium', callback_data: `admsrv_settype_${serverId}_premium` }],
+          [{ text: '🔷 Both', callback_data: `admsrv_settype_${serverId}_both` }],
+          [{ text: '« Back', callback_data: `admsrv_${serverId}` }],
+        ],
+      },
+    });
+  }
+
+  if (data.startsWith('admsrv_settype_')) {
+    const rest = data.replace('admsrv_settype_', '');
+    const lastUnderscore = rest.lastIndexOf('_');
+    const serverId = parseInt(rest.substring(0, lastUnderscore));
+    const type = rest.substring(lastUnderscore + 1);
+    updateServer(serverId, { type });
+    return bot.editMessageText(`✅ Server type ကို <b>${type}</b> ပြောင်းပြီးပါပြီ`, {
+      chat_id: chatId, message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: getAdminServerActionsKeyboard(serverId),
+    });
+  }
+
+  // ─── Server: Link Panel ─────────────────────────────────────
+  if (data.startsWith('admsrv_linkpanel_')) {
+    const serverId = parseInt(data.replace('admsrv_linkpanel_', ''));
+    const panels = getAllPanels();
+
+    if (panels.length === 0) {
+      return bot.editMessageText('❌ Panel မရှိသေးပါ။ Panels menu ကနေ ထည့်ပါ။', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: getAdminServerActionsKeyboard(serverId),
+      });
+    }
+
+    const buttons = panels.map(p => [{
+      text: `${p.type === 'trial' ? '🎁' : p.type === 'premium' ? '💎' : '🔷'} ${p.name}`,
+      callback_data: `admsrv_setpanel_${serverId}_${p.id}`,
+    }]);
+    buttons.push([{ text: '❌ Panel ဖြုတ်', callback_data: `admsrv_setpanel_${serverId}_none` }]);
+    buttons.push([{ text: '« Back', callback_data: `admsrv_${serverId}` }]);
+
+    return bot.editMessageText('🔗 ချိတ်ချင်တဲ့ Panel ရွေးပါ:', {
+      chat_id: chatId, message_id: messageId,
+      reply_markup: { inline_keyboard: buttons },
+    });
+  }
+
+  if (data.startsWith('admsrv_setpanel_')) {
+    const rest = data.replace('admsrv_setpanel_', '');
+    const firstUnderscore = rest.indexOf('_');
+    const serverId = parseInt(rest.substring(0, firstUnderscore));
+    const panelId = rest.substring(firstUnderscore + 1);
+
+    if (panelId === 'none') {
+      updateServer(serverId, { panelId: null, inboundId: null });
+      return bot.editMessageText('✅ Panel ဖြုတ်ပြီးပါပြီ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: getAdminServerActionsKeyboard(serverId),
+      });
+    }
+
+    updateServer(serverId, { panelId });
+    const panel = getPanel(panelId);
+    return bot.editMessageText(`✅ Panel <b>${panel ? panel.name : panelId}</b> ချိတ်ပြီးပါပြီ`, {
+      chat_id: chatId, message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: getAdminServerActionsKeyboard(serverId),
+    });
+  }
+
+  // ─── Server: Link Inbound ───────────────────────────────────
+  if (data.startsWith('admsrv_linkinb_')) {
+    const serverId = parseInt(data.replace('admsrv_linkinb_', ''));
+    const server = getServerById(serverId);
+
+    if (!server || !server.panelId) {
+      return bot.editMessageText('❌ Panel အရင်ချိတ်ပါ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: getAdminServerActionsKeyboard(serverId),
+      });
+    }
+
+    try {
+      const client = getClient(server.panelId);
+      const res = await client.listInbounds();
+      if (!res.success || !res.obj || res.obj.length === 0) {
+        return bot.editMessageText('❌ Inbound မရှိပါ', {
+          chat_id: chatId, message_id: messageId,
+          reply_markup: getAdminServerActionsKeyboard(serverId),
+        });
+      }
+
+      const buttons = res.obj.map(inb => [{
+        text: `${inb.remark} (${inb.protocol} :${inb.port})`,
+        callback_data: `admsrv_setinb_${serverId}_${inb.id}`,
+      }]);
+      buttons.push([{ text: '« Back', callback_data: `admsrv_${serverId}` }]);
+
+      return bot.editMessageText('📋 Inbound ရွေးပါ:', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: { inline_keyboard: buttons },
+      });
+    } catch (err) {
+      return bot.editMessageText(`❌ Error: ${err.message}`, {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: getAdminServerActionsKeyboard(serverId),
+      });
+    }
+  }
+
+  if (data.startsWith('admsrv_setinb_')) {
+    const rest = data.replace('admsrv_setinb_', '');
+    const lastUnderscore = rest.lastIndexOf('_');
+    const serverId = parseInt(rest.substring(0, lastUnderscore));
+    const inboundId = parseInt(rest.substring(lastUnderscore + 1));
+    updateServer(serverId, { inboundId });
+    return bot.editMessageText(`✅ Inbound ID <b>${inboundId}</b> ချိတ်ပြီးပါပြီ`, {
+      chat_id: chatId, message_id: messageId,
+      parse_mode: 'HTML',
       reply_markup: getAdminServerActionsKeyboard(serverId),
     });
   }
@@ -323,19 +510,14 @@ async function handleAdminCallback(bot, query) {
     const parts = data.replace('admsrvset_', '').split('_');
     const status = parts[0];
     const serverId = parseInt(parts[1]);
-
-    const serversData = JSON.parse(fs.readFileSync(SERVERS_FILE, 'utf8'));
-    const server = serversData.servers.find((s) => s.id === serverId);
+    const server = updateServer(serverId, { status });
 
     if (server) {
-      server.status = status;
-      fs.writeFileSync(SERVERS_FILE, JSON.stringify(serversData, null, 2));
-
       return bot.editMessageText(
-        `Server *${server.name}* set to ${status === 'online' ? '🟢 Online' : '🔴 Offline'}`,
+        `✅ <b>${server.name}</b> → ${status === 'online' ? '🟢 Online' : '🔴 Offline'}`,
         {
           chat_id: chatId, message_id: messageId,
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
           reply_markup: getAdminServerActionsKeyboard(serverId),
         }
       );
@@ -343,37 +525,31 @@ async function handleAdminCallback(bot, query) {
   }
 
   // ─── Remove Server ─────────────────────────────────────────
-  if (data.startsWith('admsrvdel_')) {
+  if (data.startsWith('admsrvdel_') && !data.startsWith('admsrvdelc_')) {
     const serverId = parseInt(data.replace('admsrvdel_', ''));
-    const serversData = JSON.parse(fs.readFileSync(SERVERS_FILE, 'utf8'));
-    const idx = serversData.servers.findIndex((s) => s.id === serverId);
-
-    if (idx !== -1) {
-      const removed = serversData.servers.splice(idx, 1)[0];
-      fs.writeFileSync(SERVERS_FILE, JSON.stringify(serversData, null, 2));
-
-      return bot.editMessageText(`🗑 Server *${removed.name}* removed.`, {
-        chat_id: chatId, message_id: messageId,
-        parse_mode: 'Markdown',
-        reply_markup: getAdminBackKeyboard(),
-      });
-    }
-  }
-
-  // ─── Add Server Prompt ─────────────────────────────────────
-  if (data === 'admin_addserver') {
+    const server = getServerById(serverId);
     return bot.editMessageText(
-      '➕ *Add Server*\n\n' +
-      'Send server details in this format:\n\n' +
-      '`/addserver name|host|port|country|protocols`\n\n' +
-      'Example:\n' +
-      '`/addserver Singapore 2|sg2.example.com|443|SG|vmess,vless,shadowsocks`',
+      `🗑 <b>${server ? server.name : serverId}</b> ကို ဖျက်မှာ သေချာပါသလား?`,
       {
         chat_id: chatId, message_id: messageId,
-        parse_mode: 'Markdown',
-        reply_markup: getAdminBackKeyboard(),
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✅ ဖျက်မယ်', callback_data: `admsrvdelc_${serverId}` }],
+            [{ text: '❌ Cancel', callback_data: `admsrv_${serverId}` }],
+          ],
+        },
       }
     );
+  }
+
+  if (data.startsWith('admsrvdelc_')) {
+    const serverId = parseInt(data.replace('admsrvdelc_', ''));
+    removeServer(serverId);
+    return bot.editMessageText('✅ Server ဖျက်ပြီးပါပြီ', {
+      chat_id: chatId, message_id: messageId,
+      reply_markup: getAdminServerKeyboard(getServerList()),
+    });
   }
 
   // ─── Broadcast Prompt ──────────────────────────────────────
@@ -426,30 +602,36 @@ async function handleAdminCallback(bot, query) {
   // ─── Trial Control ────────────────────────────────────────
   if (data === 'admin_trial_control') {
     const { getTrialConfig } = require('../vpn/trialManager');
-    const xuiClient = require('../vpn/xuiClient');
+    const { getTrialServers } = require('../vpn/serverList');
     const config = getTrialConfig();
 
-    let inboundName = `ID: ${config.inboundId}`;
-    try {
-      const inbound = await xuiClient.getInbound(config.inboundId);
-      if (inbound) inboundName = `${inbound.remark} (ID: ${config.inboundId})`;
-    } catch {}
+    const trialServers = getTrialServers();
+    const activeServer = config.serverId ? getServerById(config.serverId) : null;
+    const activePanel = activeServer && activeServer.panelId ? getPanel(activeServer.panelId) : null;
+
+    let serverInfo = 'မရွေးရသေး (Default)';
+    if (activeServer) {
+      serverInfo = activeServer.name;
+      if (activePanel) serverInfo += ` → ${activePanel.name}`;
+      if (activeServer.inboundId) serverInfo += ` (Inbound: ${activeServer.inboundId})`;
+    }
 
     return bot.editMessageText(
-      `🎁 *Trial Control*\n\n` +
-      `*Current Settings:*\n` +
-      `🌐 Inbound: *${inboundName}*\n` +
-      `📦 Data: *${config.totalGB} GB*\n` +
-      `📅 Expiry: *${config.expiryDays} Days*\n` +
-      `📱 IP Limit: *${config.ipLimit}*\n` +
-      `🔢 Max per user: *${config.maxTrials}*\n` +
-      `✏️ Custom Msg: ${config.customMessage ? `"${config.customMessage}"` : '_မသတ်မှတ်ရသေး_'}\n\n` +
+      `🎁 <b>Trial Control</b>\n\n` +
+      `<b>Current Settings:</b>\n` +
+      `🖥 Server: <b>${serverInfo}</b>\n` +
+      `📦 Data: <b>${config.totalGB} GB</b>\n` +
+      `📅 Expiry: <b>${config.expiryDays} Days</b>\n` +
+      `📱 IP Limit: <b>${config.ipLimit}</b>\n` +
+      `🔢 Max per user: <b>${config.maxTrials}</b>\n` +
+      `✏️ Custom Msg: ${config.customMessage ? `"${config.customMessage}"` : '<i>မသတ်မှတ်ရသေး</i>'}\n\n` +
       `Setting ပြင်ချင်ရင် အောက်က button နှိပ်ပါ`,
       {
         chat_id: chatId, message_id: messageId,
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         reply_markup: {
           inline_keyboard: [
+            [{ text: '🖥 Server ပြောင်း', callback_data: 'admin_trial_set_server' }],
             [{ text: '🌐 Inbound ပြောင်း', callback_data: 'admin_trial_set_inbound' }],
             [
               { text: '📦 Data GB ပြင်', callback_data: 'admin_trial_set_gb' },
@@ -469,6 +651,434 @@ async function handleAdminCallback(bot, query) {
         },
       }
     );
+  }
+
+  // ─── Trial: Select Server ──────────────────────────────────
+  if (data === 'admin_trial_set_server') {
+    const servers = getServerList();
+    const trialServers = servers.filter(s => s.type === 'trial' || s.type === 'both');
+
+    const buttons = trialServers.map(s => {
+      const panel = s.panelId ? getPanel(s.panelId) : null;
+      const label = panel ? `${s.name} → ${panel.name}` : s.name;
+      return [{ text: `🖥 ${label}`, callback_data: `admin_trial_setsrv_${s.id}` }];
+    });
+    buttons.push([{ text: '❌ Default (env var)', callback_data: 'admin_trial_setsrv_0' }]);
+    buttons.push([{ text: '« Back', callback_data: 'admin_trial_control' }]);
+
+    return bot.editMessageText('🖥 Trial key ထုတ်ပေးမယ့် Server ရွေးပါ:', {
+      chat_id: chatId, message_id: messageId,
+      reply_markup: { inline_keyboard: buttons },
+    });
+  }
+
+  if (data.startsWith('admin_trial_setsrv_')) {
+    const serverId = parseInt(data.replace('admin_trial_setsrv_', ''));
+    const { updateTrialConfig } = require('../vpn/trialManager');
+
+    if (serverId === 0) {
+      updateTrialConfig({ serverId: null, panelId: null });
+      return bot.editMessageText('✅ Trial → Default (env var) ပြောင်းပြီးပါပြီ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: { inline_keyboard: [[{ text: '🎁 Trial Control', callback_data: 'admin_trial_control' }]] },
+      });
+    }
+
+    const server = getServerById(serverId);
+    if (server) {
+      const updates = { serverId: server.id };
+      if (server.panelId) updates.panelId = server.panelId;
+      if (server.inboundId) updates.inboundId = server.inboundId;
+      updateTrialConfig(updates);
+      return bot.editMessageText(`✅ Trial → <b>${server.name}</b> ပြောင်းပြီးပါပြီ`, {
+        chat_id: chatId, message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [[{ text: '🎁 Trial Control', callback_data: 'admin_trial_control' }]] },
+      });
+    }
+  }
+
+  // ─── Premium Control ───────────────────────────────────────
+  if (data === 'admin_premium_control') {
+    const { getAllProtocols, getProtocolServers, getProtocolLabel } = require('../vpn/premiumConfig');
+    const settings = getCreditSettings();
+    const escHtml = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    let protoList = '';
+    for (const proto of getAllProtocols()) {
+      const servers = getProtocolServers(proto);
+      const label = getProtocolLabel(proto);
+      protoList += `${label}: <b>${servers.length}</b> server(s)\n`;
+      servers.forEach(s => {
+        const panel = s.panelId ? getPanel(s.panelId) : null;
+        const statusIcon = s.status === 'online' ? '🟢' : '🔴';
+        const panelInfo = panel ? escHtml(panel.name) : '⚠️';
+        const inbInfo = s.inboundId ? `Inb:${s.inboundId}` : '⚠️';
+        protoList += `  ${statusIcon} ${escHtml(s.name)} → ${panelInfo} | ${inbInfo}\n`;
+      });
+      protoList += '\n';
+    }
+
+    return bot.editMessageText(
+      `💎 <b>Premium Control</b>\n\n` +
+      `${protoList}` +
+      `📊 Credit/GB Rate: <b>${settings.creditPerGB}</b>\n` +
+      `👥 Referral Credit: <b>${settings.referralCredit}</b>\n\n` +
+      `<b>Premium Plans:</b>\n` +
+      settings.premiumPlans.map(p => `• ${p.name}: ${p.dataGB}GB/${p.days}d — ${p.credits} Credit`).join('\n'),
+      {
+        chat_id: chatId, message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔒 Shadowsocks', callback_data: 'premcfg_proto_shadowsocks' }],
+            [{ text: '⚡ VLESS', callback_data: 'premcfg_proto_vless' }],
+            [{ text: '🌐 VMess', callback_data: 'premcfg_proto_vmess' }],
+            [{ text: '💎 Premium Plan ပြင်', callback_data: 'admin_set_premium_plans' }],
+            [{ text: '📊 Credit/GB Rate ပြင်', callback_data: 'admin_set_credit_rate' }],
+            [{ text: '💰 Credit Manage', callback_data: 'admin_credit_manage' }],
+            [{ text: '« Admin Menu', callback_data: 'admin_menu' }],
+          ],
+        },
+      }
+    );
+  }
+
+  // ─── Premium Config: Protocol Server List ──────────────────
+  if (data.startsWith('premcfg_proto_')) {
+    const protocol = data.replace('premcfg_proto_', '');
+    const { getProtocolServers, getProtocolLabel } = require('../vpn/premiumConfig');
+    const servers = getProtocolServers(protocol);
+    const label = getProtocolLabel(protocol);
+    const escHtml = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    let text = `${label} <b>Server List</b>\n\n`;
+    if (servers.length === 0) {
+      text += '❌ Server မရှိသေးပါ။ ➕ နှိပ်ပြီး ထည့်ပါ။';
+    } else {
+      servers.forEach(s => {
+        const panel = s.panelId ? getPanel(s.panelId) : null;
+        const statusIcon = s.status === 'online' ? '🟢' : '🔴';
+        const panelInfo = panel ? `→ ${escHtml(panel.name)}` : '⚠️ Panel';
+        const inbInfo = s.inboundId ? `| Inb:${s.inboundId}` : '⚠️ Inbound';
+        text += `${statusIcon} <b>${escHtml(s.name)}</b> ${panelInfo} ${inbInfo}\n`;
+      });
+    }
+
+    const serverButtons = servers.map(s => [{
+      text: `${s.status === 'online' ? '🟢' : '🔴'} ${s.name}`,
+      callback_data: `premcfg_srv_${protocol}_${s.id}`,
+    }]);
+
+    return bot.editMessageText(text, {
+      chat_id: chatId, message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          ...serverButtons,
+          [{ text: '➕ Server ထည့်', callback_data: `premcfg_add_${protocol}` }],
+          [{ text: '« Premium Control', callback_data: 'admin_premium_control' }],
+        ],
+      },
+    });
+  }
+
+  // ─── Premium Config: Add Server to Protocol ────────────────
+  if (data.startsWith('premcfg_add_')) {
+    const protocol = data.replace('premcfg_add_', '');
+    serverAdminState[userId] = { action: 'premcfg_add_server', protocol, step: 'name' };
+    const { getProtocolLabel } = require('../vpn/premiumConfig');
+    return bot.editMessageText(
+      `➕ <b>${getProtocolLabel(protocol)} Server ထည့်</b>\n\nServer name ရိုက်ထည့်ပါ:`,
+      {
+        chat_id: chatId, message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [[{ text: '❌ Cancel', callback_data: `premcfg_proto_${protocol}` }]] },
+      }
+    );
+  }
+
+  // ─── Premium Config: Server Detail ─────────────────────────
+  if (data.startsWith('premcfg_srv_')) {
+    const rest = data.replace('premcfg_srv_', '');
+    const lastUnderscore = rest.lastIndexOf('_');
+    const protocol = rest.substring(0, lastUnderscore);
+    const serverId = parseInt(rest.substring(lastUnderscore + 1));
+    const { getProtocolServerById, getProtocolLabel } = require('../vpn/premiumConfig');
+    const server = getProtocolServerById(protocol, serverId);
+    if (!server) {
+      return bot.editMessageText('❌ Server မတွေ့ပါ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_proto_${protocol}` }]] },
+      });
+    }
+
+    const panel = server.panelId ? getPanel(server.panelId) : null;
+    const escHtml = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    let inboundInfo = 'မရွေးရသေး';
+    if (server.inboundId && panel) {
+      try {
+        const client = getClient(panel.id);
+        const inbound = await client.getInbound(server.inboundId);
+        if (inbound) {
+          inboundInfo = `${inbound.remark} (${inbound.protocol} :${inbound.port})`;
+        } else {
+          inboundInfo = `ID: ${server.inboundId}`;
+        }
+      } catch {
+        inboundInfo = `ID: ${server.inboundId}`;
+      }
+    }
+
+    return bot.editMessageText(
+      `${getProtocolLabel(protocol)} <b>${escHtml(server.name)}</b>\n\n` +
+      `📊 Status: ${server.status === 'online' ? '🟢 Online' : '🔴 Offline'}\n` +
+      `🔗 Panel: <b>${panel ? escHtml(panel.name) : '⚠️ မချိတ်ရသေး'}</b>\n` +
+      `📋 Inbound: <b>${escHtml(inboundInfo)}</b>`,
+      {
+        chat_id: chatId, message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✏️ Name ပြင်', callback_data: `premcfg_ename_${protocol}_${serverId}` }],
+            [{ text: '🔗 Panel ချိတ်', callback_data: `premcfg_panel_${protocol}_${serverId}` }],
+            [{ text: '📋 Inbound ရွေး', callback_data: `premcfg_inb_${protocol}_${serverId}` }],
+            [
+              { text: '🟢 Online', callback_data: `premcfg_status_${protocol}_${serverId}_online` },
+              { text: '🔴 Offline', callback_data: `premcfg_status_${protocol}_${serverId}_offline` },
+            ],
+            [{ text: '🗑 ဖျက်မယ်', callback_data: `premcfg_del_${protocol}_${serverId}` }],
+            [{ text: `« ${getProtocolLabel(protocol)}`, callback_data: `premcfg_proto_${protocol}` }],
+          ],
+        },
+      }
+    );
+  }
+
+  // ─── Premium Config: Edit Name ─────────────────────────────
+  if (data.startsWith('premcfg_ename_')) {
+    const rest = data.replace('premcfg_ename_', '');
+    const lastUnderscore = rest.lastIndexOf('_');
+    const protocol = rest.substring(0, lastUnderscore);
+    const serverId = parseInt(rest.substring(lastUnderscore + 1));
+    serverAdminState[userId] = { action: 'premcfg_edit_name', protocol, serverId };
+    return bot.editMessageText('✏️ Server name အသစ်ရိုက်ထည့်ပါ:', {
+      chat_id: chatId, message_id: messageId,
+      reply_markup: { inline_keyboard: [[{ text: '❌ Cancel', callback_data: `premcfg_srv_${protocol}_${serverId}` }]] },
+    });
+  }
+
+  // ─── Premium Config: Link Panel ────────────────────────────
+  if (data.startsWith('premcfg_panel_')) {
+    const rest = data.replace('premcfg_panel_', '');
+    const lastUnderscore = rest.lastIndexOf('_');
+    const protocol = rest.substring(0, lastUnderscore);
+    const serverId = parseInt(rest.substring(lastUnderscore + 1));
+    const panels = getAllPanels();
+
+    if (panels.length === 0) {
+      return bot.editMessageText('❌ Panel မရှိသေးပါ။ 🖥 Panels menu ကနေ ထည့်ပါ။', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: { inline_keyboard: [
+          [{ text: '🖥 Panels', callback_data: 'pm_list' }],
+          [{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }],
+        ]},
+      });
+    }
+
+    const buttons = panels.map(p => [{
+      text: `${p.type === 'trial' ? '🎁' : p.type === 'premium' ? '💎' : '🔷'} ${p.name}`,
+      callback_data: `premcfg_setpnl_${protocol}_${serverId}_${p.id}`,
+    }]);
+    buttons.push([{ text: '❌ Panel ဖြုတ်', callback_data: `premcfg_setpnl_${protocol}_${serverId}_none` }]);
+    buttons.push([{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }]);
+
+    return bot.editMessageText('🔗 ချိတ်ချင်တဲ့ Panel ရွေးပါ:', {
+      chat_id: chatId, message_id: messageId,
+      reply_markup: { inline_keyboard: buttons },
+    });
+  }
+
+  // ─── Premium Config: Set Panel → auto chain to Inbound ─────
+  if (data.startsWith('premcfg_setpnl_')) {
+    const rest = data.replace('premcfg_setpnl_', '');
+    const parts = rest.split('_');
+    // protocol_serverId_panelId (panelId can have underscores)
+    const protocol = parts[0];
+    const serverId = parseInt(parts[1]);
+    const panelId = parts.slice(2).join('_');
+    const { updateProtocolServer } = require('../vpn/premiumConfig');
+
+    if (panelId === 'none') {
+      updateProtocolServer(protocol, serverId, { panelId: null, inboundId: null });
+      return bot.editMessageText('✅ Panel ဖြုတ်ပြီးပါပြီ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }]] },
+      });
+    }
+
+    updateProtocolServer(protocol, serverId, { panelId });
+    const panel = getPanel(panelId);
+
+    // Auto-chain: after panel, show inbound selection
+    try {
+      const client = getClient(panelId);
+      const res = await client.listInbounds();
+      if (res.success && res.obj && res.obj.length > 0) {
+        const buttons = res.obj.map(inb => [{
+          text: `${inb.remark} (${inb.protocol} :${inb.port})`,
+          callback_data: `premcfg_setinb_${protocol}_${serverId}_${inb.id}`,
+        }]);
+        buttons.push([{ text: '⏭ နောက်မှ ရွေးမယ်', callback_data: `premcfg_srv_${protocol}_${serverId}` }]);
+
+        return bot.editMessageText(
+          `✅ Panel <b>${panel ? panel.name : panelId}</b> ချိတ်ပြီးပါပြီ\n\nInbound ရွေးပါ:`,
+          {
+            chat_id: chatId, message_id: messageId,
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: buttons },
+          }
+        );
+      }
+    } catch {}
+
+    return bot.editMessageText(`✅ Panel <b>${panel ? panel.name : panelId}</b> ချိတ်ပြီးပါပြီ`, {
+      chat_id: chatId, message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }]] },
+    });
+  }
+
+  // ─── Premium Config: Select Inbound ────────────────────────
+  if (data.startsWith('premcfg_inb_')) {
+    const rest = data.replace('premcfg_inb_', '');
+    const lastUnderscore = rest.lastIndexOf('_');
+    const protocol = rest.substring(0, lastUnderscore);
+    const serverId = parseInt(rest.substring(lastUnderscore + 1));
+    const { getProtocolServerById } = require('../vpn/premiumConfig');
+    const server = getProtocolServerById(protocol, serverId);
+
+    if (!server || !server.panelId) {
+      return bot.editMessageText('❌ Panel အရင်ချိတ်ပါ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: { inline_keyboard: [
+          [{ text: '🔗 Panel ချိတ်', callback_data: `premcfg_panel_${protocol}_${serverId}` }],
+          [{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }],
+        ]},
+      });
+    }
+
+    try {
+      const client = getClient(server.panelId);
+      const res = await client.listInbounds();
+      if (!res.success || !res.obj || res.obj.length === 0) {
+        return bot.editMessageText('❌ Inbound မရှိပါ', {
+          chat_id: chatId, message_id: messageId,
+          reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }]] },
+        });
+      }
+
+      const buttons = res.obj.map(inb => [{
+        text: `${inb.remark} (${inb.protocol} :${inb.port})`,
+        callback_data: `premcfg_setinb_${protocol}_${serverId}_${inb.id}`,
+      }]);
+      buttons.push([{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }]);
+
+      return bot.editMessageText('📋 Inbound ရွေးပါ:', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: { inline_keyboard: buttons },
+      });
+    } catch (err) {
+      return bot.editMessageText(`❌ Error: ${err.message}`, {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }]] },
+      });
+    }
+  }
+
+  // ─── Premium Config: Set Inbound ───────────────────────────
+  if (data.startsWith('premcfg_setinb_')) {
+    const rest = data.replace('premcfg_setinb_', '');
+    const parts = rest.split('_');
+    const protocol = parts[0];
+    const serverId = parseInt(parts[1]);
+    const inboundId = parseInt(parts[2]);
+    const { updateProtocolServer, getProtocolServerById } = require('../vpn/premiumConfig');
+    updateProtocolServer(protocol, serverId, { inboundId });
+
+    const server = getProtocolServerById(protocol, serverId);
+    let inbName = `ID: ${inboundId}`;
+    if (server && server.panelId) {
+      try {
+        const client = getClient(server.panelId);
+        const inbound = await client.getInbound(inboundId);
+        if (inbound) inbName = `${inbound.remark} (${inbound.protocol} :${inbound.port})`;
+      } catch {}
+    }
+
+    return bot.editMessageText(`✅ Inbound: <b>${inbName}</b> ရွေးပြီးပါပြီ`, {
+      chat_id: chatId, message_id: messageId,
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }]] },
+    });
+  }
+
+  // ─── Premium Config: Set Status ────────────────────────────
+  if (data.startsWith('premcfg_status_')) {
+    const rest = data.replace('premcfg_status_', '');
+    const parts = rest.split('_');
+    const protocol = parts[0];
+    const serverId = parseInt(parts[1]);
+    const status = parts[2];
+    const { updateProtocolServer } = require('../vpn/premiumConfig');
+    updateProtocolServer(protocol, serverId, { status });
+    return bot.editMessageText(`✅ Status → ${status === 'online' ? '🟢 Online' : '🔴 Offline'}`, {
+      chat_id: chatId, message_id: messageId,
+      reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${serverId}` }]] },
+    });
+  }
+
+  // ─── Premium Config: Delete Server ─────────────────────────
+  if (data.startsWith('premcfg_del_')) {
+    const rest = data.replace('premcfg_del_', '');
+    const lastUnderscore = rest.lastIndexOf('_');
+    const protocol = rest.substring(0, lastUnderscore);
+    const serverId = parseInt(rest.substring(lastUnderscore + 1));
+    const { getProtocolServerById, getProtocolLabel } = require('../vpn/premiumConfig');
+    const server = getProtocolServerById(protocol, serverId);
+    if (!server) {
+      return bot.editMessageText('❌ Server မတွေ့ပါ', {
+        chat_id: chatId, message_id: messageId,
+        reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_proto_${protocol}` }]] },
+      });
+    }
+    return bot.editMessageText(
+      `🗑 <b>${server.name}</b> ကို ဖျက်မှာ သေချာပါသလား?`,
+      {
+        chat_id: chatId, message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✅ ဖျက်မယ်', callback_data: `premcfg_cdel_${protocol}_${serverId}` }],
+            [{ text: '❌ မဖျက်ဘူး', callback_data: `premcfg_srv_${protocol}_${serverId}` }],
+          ],
+        },
+      }
+    );
+  }
+
+  if (data.startsWith('premcfg_cdel_')) {
+    const rest = data.replace('premcfg_cdel_', '');
+    const lastUnderscore = rest.lastIndexOf('_');
+    const protocol = rest.substring(0, lastUnderscore);
+    const serverId = parseInt(rest.substring(lastUnderscore + 1));
+    const { removeProtocolServer } = require('../vpn/premiumConfig');
+    removeProtocolServer(protocol, serverId);
+    return bot.editMessageText('✅ Server ဖျက်ပြီးပါပြီ', {
+      chat_id: chatId, message_id: messageId,
+      reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_proto_${protocol}` }]] },
+    });
   }
 
   // ─── Trial Inbound Selector ───────────────────────────────
@@ -574,35 +1184,56 @@ async function handleAdminCallback(bot, query) {
     );
   }
 
-  if (data.startsWith('confirm_delete_')) {
+  if (data.startsWith('confirm_delete_') && data !== 'confirm_delete_expired') {
     const email = data.replace('confirm_delete_', '');
-    const xuiClient = require('../vpn/xuiClient');
-    const { premiumClient } = require('../vpn/xuiClient');
     const { removePremiumKeyByEmail } = require('../vpn/premiumManager');
     const { removeTrialKeyByEmail } = require('../vpn/trialManager');
     try {
-      // Try both panels (trial + premium)
+      // Search across ALL panels for the client
       let client = null;
-      let targetClient = xuiClient;
-      let panelName = 'Trial';
-      const clients = await xuiClient.getAllClients();
-      client = clients.find(c => c.email === email);
+      let targetClient = null;
+      let panelName = '';
+      let inboundId = null;
 
-      if (!client && premiumClient) {
+      const panels = getAllPanels();
+      console.log(`[Key Delete] Searching ${panels.length} panels for email: ${email}`);
+      for (const p of panels) {
         try {
-          const premClients = await premiumClient.getAllClients();
-          client = premClients.find(c => c.email === email);
-          if (client) {
-            targetClient = premiumClient;
-            panelName = 'Premium';
+          const pc = getClient(p.id);
+          const clients = await pc.getAllClients();
+          const found = clients.find(c => c.email === email);
+          if (found) {
+            client = found;
+            targetClient = pc;
+            panelName = p.name;
+            inboundId = found.inboundId;
+            console.log(`[Key Delete] Found in panel ${p.name}, inboundId=${inboundId}, clientId=${found.id}`);
+            break;
           }
         } catch (e) {
-          console.error('Premium panel search error:', e.message);
+          console.error(`Panel ${p.name} search error:`, e.message);
+        }
+      }
+
+      // Fallback: try legacy default xuiClient
+      if (!client) {
+        try {
+          const xuiClient = require('../vpn/xuiClient');
+          const clients = await xuiClient.getAllClients();
+          const found = clients.find(c => c.email === email);
+          if (found) {
+            client = found;
+            targetClient = xuiClient;
+            panelName = 'Default';
+            inboundId = found.inboundId;
+            console.log(`[Key Delete] Found in Default panel, inboundId=${inboundId}, clientId=${found.id}`);
+          }
+        } catch (e) {
+          console.error('Legacy panel search error:', e.message);
         }
       }
 
       if (!client) {
-        // Still remove from local database even if not found on panel
         const removedPrem = removePremiumKeyByEmail(email);
         const removedTrial = removeTrialKeyByEmail(email);
         if (removedPrem || removedTrial) {
@@ -619,17 +1250,15 @@ async function handleAdminCallback(bot, query) {
         });
       }
 
-      // Delete from X-UI panel
-      const inbound = await targetClient.getInbound(client.inboundId);
-      const settings = JSON.parse(inbound.settings);
-      settings.clients = settings.clients.filter(c => c.email !== email);
-      const updateData = { ...inbound, settings: JSON.stringify(settings) };
-      delete updateData.clientStats;
-      await targetClient.request('post', `/panel/api/inbounds/update/${client.inboundId}`, updateData);
+      // Delete from X-UI panel (pass email as fallback for Shadowsocks clients with no UUID)
+      console.log(`[Key Delete] Deleting from panel: inboundId=${inboundId}, clientId=${client.id || '(none)'}, email=${email}`);
+      const delResult = await targetClient.deleteClient(inboundId, client.id, email);
+      console.log(`[Key Delete] Delete result:`, JSON.stringify(delResult));
 
       // Also remove from local databases (user my key)
-      removePremiumKeyByEmail(email);
-      removeTrialKeyByEmail(email);
+      const removedPrem = removePremiumKeyByEmail(email);
+      const removedTrial = removeTrialKeyByEmail(email);
+      console.log(`[Key Delete] Local DB removed: premium=${removedPrem}, trial=${removedTrial}`);
 
       return bot.editMessageText(
         `✅ <code>${email}</code> ဖျက်ပြီးပါပြီ!\n\n📋 Panel: ${panelName}\n🗑 X-UI Panel + User My Key ကနေ ဖျက်ပြီးပါပြီ`,
@@ -640,11 +1269,20 @@ async function handleAdminCallback(bot, query) {
         }
       );
     } catch (err) {
-      console.error('Key delete error:', err.message);
-      return bot.editMessageText(`❌ Error: ${err.message}`, {
-        chat_id: chatId, message_id: messageId,
-        reply_markup: getAdminBackKeyboard(),
-      });
+      console.error('Key delete error:', err);
+      // Even if panel delete fails, still remove from local DB
+      const { removePremiumKeyByEmail: rmPrem } = require('../vpn/premiumManager');
+      const { removeTrialKeyByEmail: rmTrial } = require('../vpn/trialManager');
+      rmPrem(email);
+      rmTrial(email);
+      return bot.editMessageText(
+        `⚠️ Panel error: ${err.message}\n\nLocal database ကနေ ဖျက်ပြီးပါပြီ`,
+        {
+          chat_id: chatId, message_id: messageId,
+          parse_mode: 'HTML',
+          reply_markup: getAdminBackKeyboard(),
+        }
+      );
     }
   }
 
@@ -668,7 +1306,6 @@ async function handleAdminCallback(bot, query) {
   }
 
   if (data === 'confirm_delete_expired') {
-    const xuiClient = require('../vpn/xuiClient');
     const { removePremiumKeyByEmail } = require('../vpn/premiumManager');
     const { removeTrialKeyByEmail } = require('../vpn/trialManager');
 
@@ -677,52 +1314,69 @@ async function handleAdminCallback(bot, query) {
         chat_id: chatId, message_id: messageId,
       });
 
-      const result = await xuiClient.listInbounds();
-      if (!result.success || !result.obj) {
-        return bot.editMessageText('❌ X-UI panel ကနေ inbound list ရယူ၍ မရပါ', {
-          chat_id: chatId, message_id: messageId,
-          reply_markup: getAdminBackKeyboard(),
-        });
-      }
-
       const now = Date.now();
       let deleted = 0;
       const deletedList = [];
 
-      for (const inbound of result.obj) {
-        const settings = JSON.parse(inbound.settings);
-        const clients = settings.clients || [];
-        const clientStats = inbound.clientStats || [];
+      // Search across all configured panels
+      const panels = getAllPanels();
+      const panelClients = [];
+      for (const p of panels) {
+        try {
+          panelClients.push({ panel: p, client: getClient(p.id) });
+        } catch {}
+      }
+      // Also include legacy default panel
+      try {
+        const xuiClient = require('../vpn/xuiClient');
+        if (xuiClient.baseUrl) {
+          panelClients.push({ panel: { name: 'Default' }, client: xuiClient });
+        }
+      } catch {}
 
-        for (const client of clients) {
-          const stats = clientStats.find((s) => s.email === client.email) || {};
-          const isTimeExpired = client.expiryTime > 0 && client.expiryTime < now;
-          const totalUsed = (stats.up || 0) + (stats.down || 0);
-          const isDataFull = client.totalGB > 0 && totalUsed >= client.totalGB;
+      for (const { panel, client: pc } of panelClients) {
+        try {
+          const result = await pc.listInbounds();
+          if (!result.success || !result.obj) continue;
 
-          if (isTimeExpired || isDataFull) {
-            try {
-              await xuiClient.deleteClient(inbound.id, client.id);
-              removePremiumKeyByEmail(client.email);
-              removeTrialKeyByEmail(client.email);
-              deleted++;
-              const reason = isTimeExpired && isDataFull ? 'Expired + GB Full'
-                : isTimeExpired ? 'Expired' : 'GB Full';
-              deletedList.push(`${client.email} (${reason})`);
+          for (const inbound of result.obj) {
+            const settings = JSON.parse(inbound.settings);
+            const clients = settings.clients || [];
+            const clientStats = inbound.clientStats || [];
 
-              if (client.tgId) {
+            for (const client of clients) {
+              const stats = clientStats.find((s) => s.email === client.email) || {};
+              const isTimeExpired = client.expiryTime > 0 && client.expiryTime < now;
+              const totalUsed = (stats.up || 0) + (stats.down || 0);
+              const isDataFull = client.totalGB > 0 && totalUsed >= client.totalGB;
+
+              if (isTimeExpired || isDataFull) {
                 try {
-                  await bot.sendMessage(client.tgId,
-                    `🗑 သက်တမ်းကုန်/GB ပြည့်သွားတဲ့ VPN key ဖျက်ပြီးပါပြီ။\n\n` +
-                    `Key: ${client.email}\n\n` +
-                    `Key အသစ်လိုချင်ရင် /menu ကနေ ရယူနိုင်ပါတယ်။`
-                  );
-                } catch {}
+                  await pc.deleteClient(inbound.id, client.id, client.email);
+                  removePremiumKeyByEmail(client.email);
+                  removeTrialKeyByEmail(client.email);
+                  deleted++;
+                  const reason = isTimeExpired && isDataFull ? 'Expired + GB Full'
+                    : isTimeExpired ? 'Expired' : 'GB Full';
+                  deletedList.push(`${client.email} (${reason}) [${panel.name}]`);
+
+                  if (client.tgId) {
+                    try {
+                      await bot.sendMessage(client.tgId,
+                        `🗑 သက်တမ်းကုန်/GB ပြည့်သွားတဲ့ VPN key ဖျက်ပြီးပါပြီ။\n\n` +
+                        `Key: ${client.email}\n\n` +
+                        `Key အသစ်လိုချင်ရင် /menu ကနေ ရယူနိုင်ပါတယ်။`
+                      );
+                    } catch {}
+                  }
+                } catch (err) {
+                  console.error(`Failed to delete ${client.email}: ${err.message}`);
+                }
               }
-            } catch (err) {
-              console.error(`Failed to delete ${client.email}: ${err.message}`);
             }
           }
+        } catch (err) {
+          console.error(`Panel ${panel.name} expired scan error:`, err.message);
         }
       }
 
@@ -1386,100 +2040,6 @@ async function handleAdminCallback(bot, query) {
     return;
   }
 
-  // ─── Panels (Multi-panel overview) ─────────────────────────
-  if (data === 'admin_panels') {
-    const xuiClient = require('../vpn/xuiClient');
-    const { premiumClient } = require('../vpn/xuiClient');
-    let text = `🖥 <b>Panels Overview</b>\n\n`;
-
-    // Trial Panel
-    try {
-      const status = await xuiClient.getServerStatus();
-      if (status && status.obj) {
-        const s = status.obj;
-        const cpuUsed = s.cpu ? s.cpu.toFixed(1) : 'N/A';
-        const memUsed = s.mem ? ((s.mem.current / s.mem.total) * 100).toFixed(1) : 'N/A';
-        text += `🟢 <b>Trial Panel</b>\n`;
-        text += `  🌐 URL: <code>${process.env.XUI_PANEL_URL || 'N/A'}</code>\n`;
-        text += `  💻 CPU: ${cpuUsed}%  |  RAM: ${memUsed}%\n\n`;
-      } else {
-        text += `🔴 <b>Trial Panel</b> — ချိတ်ဆက်မရပါ\n\n`;
-      }
-    } catch {
-      text += `🔴 <b>Trial Panel</b> — ချိတ်ဆက်မရပါ\n\n`;
-    }
-
-    // Premium Panel
-    if (process.env.PREMIUM_XUI_PANEL_URL) {
-      try {
-        const pStatus = await premiumClient.getServerStatus();
-        if (pStatus && pStatus.obj) {
-          const s = pStatus.obj;
-          const cpuUsed = s.cpu ? s.cpu.toFixed(1) : 'N/A';
-          const memUsed = s.mem ? ((s.mem.current / s.mem.total) * 100).toFixed(1) : 'N/A';
-          text += `🟢 <b>Premium Panel</b>\n`;
-          text += `  🌐 URL: <code>${process.env.PREMIUM_XUI_PANEL_URL}</code>\n`;
-          text += `  💻 CPU: ${cpuUsed}%  |  RAM: ${memUsed}%\n\n`;
-        } else {
-          text += `🔴 <b>Premium Panel</b> — ချိတ်ဆက်မရပါ\n\n`;
-        }
-      } catch {
-        text += `🔴 <b>Premium Panel</b> — ချိတ်ဆက်မရပါ\n\n`;
-      }
-    } else {
-      text += `⚠️ <b>Premium Panel</b> — မသတ်မှတ်ရသေး\n`;
-      text += `  <i>PREMIUM_XUI_PANEL_URL .env ထဲ ထည့်ပါ</i>\n\n`;
-    }
-
-    return bot.editMessageText(text, {
-      chat_id: chatId, message_id: messageId,
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🌐 X-UI Panel Manage', callback_data: 'xui_menu' }],
-          [{ text: '« Admin Menu', callback_data: 'admin_menu' }],
-        ],
-      },
-    });
-  }
-
-  // ─── Premium Control ──────────────────────────────────────
-  if (data === 'admin_premium_control') {
-    const { premiumClient } = require('../vpn/xuiClient');
-    const { getCreditSettings } = require('../vpn/creditManager');
-    const settings = getCreditSettings();
-
-    let text = `💎 <b>Premium Control</b>\n\n`;
-    text += `<b>Premium Panel:</b> ${process.env.PREMIUM_XUI_PANEL_URL ? `<code>${process.env.PREMIUM_XUI_PANEL_URL}</code>` : '⚠️ မသတ်မှတ်ရသေး'}\n`;
-    text += `<b>Server Host:</b> <code>${process.env.PREMIUM_XUI_SERVER_HOST || '⚠️ မသတ်မှတ်ရသေး'}</code>\n\n`;
-    text += `<b>💎 Premium Plans (Credit):</b>\n`;
-    for (const p of settings.premiumPlans) {
-      text += `  • ${p.name}: ${p.dataGB}GB / ${p.days}d — ${p.credits} Credit (${p.ipLimit} device)\n`;
-    }
-
-    let activeKeys = 0;
-    try {
-      const premClients = await premiumClient.getAllClients();
-      const now = Date.now();
-      activeKeys = premClients.filter(c => c.enable && (c.expiryTime === 0 || c.expiryTime > now)).length;
-      text += `\n<b>🔑 Active Premium Keys:</b> ${activeKeys}`;
-    } catch {
-      text += `\n<i>Premium panel ချိတ်ဆက်မရပါ</i>`;
-    }
-
-    return bot.editMessageText(text, {
-      chat_id: chatId, message_id: messageId,
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '💎 Premium Plans ပြင်', callback_data: 'admin_set_premium_plans' }],
-          [{ text: '💰 Credit Manage', callback_data: 'admin_credit_manage' }],
-          [{ text: '« Admin Menu', callback_data: 'admin_menu' }],
-        ],
-      },
-    });
-  }
-
   // ─── Key Extend: Prompt for email ─────────────────────────
   if (data === 'admin_key_extend') {
     broadcastState[`extend_${userId}`] = true;
@@ -1770,6 +2330,123 @@ function clearCreateCoupon(userId) { delete broadcastState[`createcoupon_${Strin
 function isDeletingCoupon(userId) { return broadcastState[`deletecoupon_${String(userId)}`] === true; }
 function clearDeleteCoupon(userId) { delete broadcastState[`deletecoupon_${String(userId)}`]; }
 
+function isServerAdminState(userId) {
+  return !!serverAdminState[String(userId)];
+}
+
+function getServerAdminState(userId) {
+  return serverAdminState[String(userId)] || null;
+}
+
+function clearServerAdminState(userId) {
+  delete serverAdminState[String(userId)];
+}
+
+async function handleServerAdminMessage(bot, msg) {
+  const userId = String(msg.from.id);
+  const state = serverAdminState[userId];
+  if (!state) return false;
+
+  const text = msg.text ? msg.text.trim() : '';
+  if (!text) return false;
+
+  const chatId = msg.chat.id;
+
+  if (state.action === 'add_server' && state.step === 'name') {
+    const newServer = addServer({ name: text, type: 'trial' });
+    delete serverAdminState[userId];
+    bot.sendMessage(chatId,
+      `✅ Server <b>${text}</b> ထည့်ပြီးပါပြီ\n\nPanel ချိတ်ခြင်း၊ Type ပြောင်းခြင်း servers menu မှာ ဆက်လုပ်ပါ`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: getAdminServerActionsKeyboard(newServer.id),
+      }
+    );
+    return true;
+  }
+
+  if (state.action === 'edit_server_name') {
+    const server = updateServer(state.serverId, { name: text });
+    delete serverAdminState[userId];
+    if (server) {
+      bot.sendMessage(chatId,
+        `✅ Server name ကို <b>${text}</b> ပြောင်းပြီးပါပြီ`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: getAdminServerActionsKeyboard(state.serverId),
+        }
+      );
+    }
+    return true;
+  }
+
+  // Premium Config: Add Server to Protocol
+  if (state.action === 'premcfg_add_server' && state.step === 'name') {
+    const { addProtocolServer, getProtocolLabel } = require('../vpn/premiumConfig');
+    const protocol = state.protocol;
+    const newServer = addProtocolServer(protocol, { name: text });
+    delete serverAdminState[userId];
+
+    if (!newServer) {
+      bot.sendMessage(chatId, '❌ Error adding server', {
+        reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_proto_${protocol}` }]] },
+      });
+      return true;
+    }
+
+    // Show panel selection immediately after creation
+    const { getAllPanels: getAllPanelsInner } = require('../vpn/panelManager');
+    const panels = getAllPanelsInner();
+    if (panels.length > 0) {
+      const buttons = panels.map(p => [{
+        text: `${p.type === 'trial' ? '🎁' : p.type === 'premium' ? '💎' : '🔷'} ${p.name}`,
+        callback_data: `premcfg_setpnl_${protocol}_${newServer.id}_${p.id}`,
+      }]);
+      buttons.push([{ text: '⏭ နောက်မှ ချိတ်မယ်', callback_data: `premcfg_srv_${protocol}_${newServer.id}` }]);
+
+      bot.sendMessage(chatId,
+        `✅ ${getProtocolLabel(protocol)} Server <b>${text}</b> ထည့်ပြီးပါပြီ\n\nPanel ချိတ်ပါ:`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: buttons },
+        }
+      );
+    } else {
+      bot.sendMessage(chatId,
+        `✅ ${getProtocolLabel(protocol)} Server <b>${text}</b> ထည့်ပြီးပါပြီ\n\n⚠️ Panel မရှိသေးပါ။ Panels menu ကနေ ထည့်ပါ။`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: [
+            [{ text: '🖥 Panels', callback_data: 'pm_list' }],
+            [{ text: '« Back', callback_data: `premcfg_proto_${protocol}` }],
+          ]},
+        }
+      );
+    }
+    return true;
+  }
+
+  // Premium Config: Edit Name
+  if (state.action === 'premcfg_edit_name') {
+    const { updateProtocolServer } = require('../vpn/premiumConfig');
+    const protocol = state.protocol;
+    const server = updateProtocolServer(protocol, state.serverId, { name: text });
+    delete serverAdminState[userId];
+    if (server) {
+      bot.sendMessage(chatId,
+        `✅ Server name ကို <b>${text}</b> ပြောင်းပြီးပါပြီ`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: [[{ text: '« Back', callback_data: `premcfg_srv_${protocol}_${state.serverId}` }]] },
+        }
+      );
+    }
+    return true;
+  }
+
+  return false;
+}
+
 module.exports = {
   handleAdminCallback,
   isBroadcasting, clearBroadcast,
@@ -1789,4 +2466,5 @@ module.exports = {
   isDeletingCoupon, clearDeleteCoupon,
   isBanningWithReason, getBanTarget, clearBanReason,
   getBlacklistEntry, addBlacklistEntry,
+  isServerAdminState, getServerAdminState, clearServerAdminState, handleServerAdminMessage,
 };

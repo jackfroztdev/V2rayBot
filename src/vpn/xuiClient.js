@@ -2,11 +2,10 @@ const axios = require('axios');
 const crypto = require('crypto');
 
 class XUIClient {
-  constructor() {
-    // Strip trailing slash to avoid double-slash in URL paths (supports subpath panels)
-    this.baseUrl = (process.env.XUI_PANEL_URL || '').replace(/\/+$/, '');
-    this.username = process.env.XUI_USERNAME || '';
-    this.password = process.env.XUI_PASSWORD || '';
+  constructor(config = {}) {
+    this.baseUrl = config.url || process.env.XUI_PANEL_URL || '';
+    this.username = config.username || process.env.XUI_USERNAME || '';
+    this.password = config.password || process.env.XUI_PASSWORD || '';
     this.cookie = null;
     this.cookieExpiry = null;
   }
@@ -87,18 +86,12 @@ class XUIClient {
 
   // ─── Server Status ─────────────────────────────────────────
   async getServerStatus() {
-    return await this.request('get', '/xui/API/server/status');
+    return await this.request('get', '/panel/api/server/status');
   }
 
   // ─── Inbound Management ────────────────────────────────────
   async listInbounds() {
-    // Use trailing slash to avoid 301 redirect (axios doesn't follow redirects by default)
-    const result = await this.request('get', '/xui/API/inbounds/');
-    // Normalize response: wrap array in {success, obj} if needed
-    if (Array.isArray(result)) {
-      return { success: true, obj: result };
-    }
-    return result;
+    return await this.request('get', '/panel/api/inbounds/list');
   }
 
   async getInbound(id) {
@@ -110,11 +103,11 @@ class XUIClient {
   }
 
   async addInbound(inboundConfig) {
-    return await this.request('post', '/xui/inbound/add', inboundConfig);
+    return await this.request('post', '/panel/api/inbounds/add', inboundConfig);
   }
 
   async deleteInbound(id) {
-    return await this.request('post', `/xui/inbound/del/${id}`);
+    return await this.request('post', `/panel/api/inbounds/del/${id}`);
   }
 
   // ─── Client Management ─────────────────────────────────────
@@ -123,11 +116,36 @@ class XUIClient {
       id: inboundId,
       settings: JSON.stringify({ clients: [clientConfig] }),
     };
-    return await this.request('post', '/xui/inbound/addClient', data);
+    return await this.request('post', '/panel/api/inbounds/addClient', data);
   }
 
-  async deleteClient(inboundId, clientUuid) {
-    return await this.request('post', `/xui/inbound/${inboundId}/delClient/${clientUuid}`);
+  async deleteClient(inboundId, clientUuid, email) {
+    // For Shadowsocks clients that have no UUID, use email
+    const identifier = clientUuid || email;
+    if (!identifier) throw new Error('No client identifier (uuid or email) provided');
+
+    // Try normal delete first
+    const result = await this.request('post', `/panel/api/inbounds/${inboundId}/delClient/${identifier}`);
+    if (result.success) return result;
+
+    // If failed (e.g. last client in inbound), remove client from settings manually
+    console.log(`[deleteClient] Normal delete failed: ${result.msg}. Trying manual removal.`);
+    const inbound = await this.getInbound(inboundId);
+    if (!inbound) return result;
+
+    const settings = JSON.parse(inbound.settings);
+    const before = (settings.clients || []).length;
+    settings.clients = (settings.clients || []).filter(c => {
+      if (email && c.email === email) return false;
+      if (clientUuid && c.id === clientUuid) return false;
+      return true;
+    });
+
+    if (settings.clients.length === before) return result;
+
+    const updateData = { ...inbound, settings: JSON.stringify(settings) };
+    delete updateData.clientStats;
+    return await this.request('post', `/panel/api/inbounds/update/${inboundId}`, updateData);
   }
 
   async updateClient(clientUuid, inboundId, clientConfig) {
@@ -147,11 +165,11 @@ class XUIClient {
 
     const updateData = { ...inbound, settings: JSON.stringify(settings) };
     delete updateData.clientStats;
-    return await this.request('post', `/xui/inbound/update/${inboundId}`, updateData);
+    return await this.request('post', `/panel/api/inbounds/update/${inboundId}`, updateData);
   }
 
   async resetClientTraffic(inboundId, email) {
-    return await this.request('post', `/xui/inbound/${inboundId}/resetClientTraffic/${email}`);
+    return await this.request('post', `/panel/api/inbounds/${inboundId}/resetClientTraffic/${email}`);
   }
 
   // ─── Helper: Create VMess Inbound ──────────────────────────
@@ -371,16 +389,14 @@ class XUIClient {
   }
 }
 
-// Premium XUI Client (separate panel)
+// Premium XUI Client (separate panel) — kept for backward compatibility
 class PremiumXUIClient extends XUIClient {
   constructor() {
-    super();
-    // Strip trailing slash to avoid double-slash in URL paths (supports subpath panels)
-    this.baseUrl = (process.env.PREMIUM_XUI_PANEL_URL || '').replace(/\/+$/, '');
-    this.username = process.env.PREMIUM_XUI_USERNAME || '';
-    this.password = process.env.PREMIUM_XUI_PASSWORD || '';
-    this.cookie = null;
-    this.cookieExpiry = null;
+    super({
+      url: process.env.PREMIUM_XUI_PANEL_URL || '',
+      username: process.env.PREMIUM_XUI_USERNAME || '',
+      password: process.env.PREMIUM_XUI_PASSWORD || '',
+    });
   }
 }
 

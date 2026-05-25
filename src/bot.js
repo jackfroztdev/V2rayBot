@@ -5,9 +5,10 @@ const { handleCallback } = require('./callbacks');
 const { getMainMenuKeyboard } = require('./keyboards');
 const { isAdmin, requireAdmin } = require('./admin/auth');
 const { registerUser, getUser, isBanned, getAllUsers } = require('./admin/userManager');
-const { handleAdminCallback, isBroadcasting, clearBroadcast, isResettingTrial, clearTrialReset, isExtendingKey, clearKeyExtend, isSettingCustomMsg, clearCustomMsg, isDeletingKey, clearKeyDelete, isSettingTrialGB, clearTrialGB, isSettingMaintMsg, clearMaintMsg, isMaintenanceMode, getMaintenanceStatus, isAddingCredit, clearAddCredit, isSettingRefCredit, clearRefCredit, isSettingCreditRate, clearCreditRate, isSettingCreditInbound, clearCreditInbound, isSettingPremPlan, clearPremPlan, isCreatingCoupon, clearCreateCoupon, isDeletingCoupon, clearDeleteCoupon, isBanningWithReason, getBanTarget, clearBanReason } = require('./admin/adminCallbacks');
+const { handleAdminCallback, isBroadcasting, clearBroadcast, isResettingTrial, clearTrialReset, isExtendingKey, clearKeyExtend, isSettingCustomMsg, clearCustomMsg, isDeletingKey, clearKeyDelete, isSettingTrialGB, clearTrialGB, isSettingMaintMsg, clearMaintMsg, isMaintenanceMode, getMaintenanceStatus, isAddingCredit, clearAddCredit, isSettingRefCredit, clearRefCredit, isSettingCreditRate, clearCreditRate, isSettingCreditInbound, clearCreditInbound, isSettingPremPlan, clearPremPlan, isCreatingCoupon, clearCreateCoupon, isDeletingCoupon, clearDeleteCoupon, isBanningWithReason, getBanTarget, clearBanReason, isServerAdminState, clearServerAdminState, handleServerAdminMessage } = require('./admin/adminCallbacks');
 const { getAdminMenuKeyboard } = require('./admin/adminKeyboards');
 const { handleXuiCallback, handleXuiAdminMessage, getAdminState, clearAdminState } = require('./admin/xuiAdminCallbacks');
+const { handlePanelCallback, handlePanelAdminMessage, handlePanelTypeCallback, isPanelAdminState, clearPanelState } = require('./admin/panelCallbacks');
 const { checkMembership, getForceJoinKeyboard, getForceJoinMessage, isForceJoinEnabled } = require('./middleware/forceJoin');
 const { logUserAction, isRatingFeedback, clearRatingFeedback, isCouponRedeem, clearCouponRedeem, setLogChannel, getLogChannel } = require('./middleware/userLogger');
 const { startUsageAlertScheduler } = require('./middleware/usageAlert');
@@ -98,53 +99,7 @@ bot.onText(/\/admin/, (msg) => {
   });
 });
 
-bot.onText(/\/addserver (.+)/, (msg, match) => {
-  if (!requireAdmin(bot, msg)) return;
-  const parts = match[1].split('|');
-
-  if (parts.length < 5) {
-    bot.sendMessage(msg.chat.id,
-      '❌ Invalid format.\n\nUse: `/addserver name|host|port|country|protocols`\n\n' +
-      'Example: `/addserver Singapore 2|sg2.example.com|443|SG|vmess,vless,shadowsocks`',
-      { parse_mode: 'Markdown' }
-    );
-    return;
-  }
-
-  const [name, host, port, country, protocols] = parts;
-
-  let serversData;
-  if (fs.existsSync(SERVERS_FILE)) {
-    serversData = JSON.parse(fs.readFileSync(SERVERS_FILE, 'utf8'));
-  } else {
-    serversData = { servers: [] };
-  }
-
-  const maxId = serversData.servers.reduce((max, s) => Math.max(max, s.id), 0);
-
-  const newServer = {
-    id: maxId + 1,
-    name: name.trim(),
-    host: host.trim(),
-    port: parseInt(port.trim()),
-    country: country.trim().toUpperCase(),
-    status: 'online',
-    protocols: protocols.split(',').map((p) => p.trim()),
-  };
-
-  serversData.servers.push(newServer);
-  fs.writeFileSync(SERVERS_FILE, JSON.stringify(serversData, null, 2));
-
-  bot.sendMessage(msg.chat.id,
-    `✅ Server added!\n\n` +
-    `*Name:* ${newServer.name}\n` +
-    `*Host:* \`${newServer.host}\`\n` +
-    `*Port:* ${newServer.port}\n` +
-    `*Country:* ${newServer.country}\n` +
-    `*Protocols:* ${newServer.protocols.join(', ')}`,
-    { parse_mode: 'Markdown' }
-  );
-});
+// /addserver command removed - now handled via inline UI in admin_servers
 
 bot.onText(/\/broadcast (.+)/, async (msg, match) => {
   if (!requireAdmin(bot, msg)) return;
@@ -520,6 +475,8 @@ bot.onText(/\/cancel/, (msg) => {
   clearPremPlan(msg.from.id);
   clearCreateCoupon(msg.from.id);
   clearDeleteCoupon(msg.from.id);
+  clearPanelState(msg.from.id);
+  clearServerAdminState(msg.from.id);
   adminOrderState.delete(String(msg.from.id));
   bot.sendMessage(msg.chat.id, 'Cancelled.', { reply_markup: getMainMenuKeyboard() });
 });
@@ -634,8 +591,17 @@ bot.on('callback_query', async (query) => {
   }
 
   // Force join check for non-admin callbacks
-  if (!query.data.startsWith('xui_') && !query.data.startsWith('admin_') && !query.data.startsWith('admsrv') && !query.data.startsWith('confirm_delete_')) {
+  if (!query.data.startsWith('xui_') && !query.data.startsWith('admin_') && !query.data.startsWith('admsrv') && !query.data.startsWith('premcfg_') && !query.data.startsWith('confirm_delete_') && !query.data.startsWith('pm_') && !query.data.startsWith('px_')) {
     if (!await enforceJoinCallback(query)) return;
+  }
+
+  // Check if it's a panel management callback
+  if (query.data.startsWith('pm_') || query.data.startsWith('px_')) {
+    // Handle add panel type selection
+    if (query.data.startsWith('pm_addtype_')) {
+      return handlePanelTypeCallback(bot, query);
+    }
+    return handlePanelCallback(bot, query);
   }
 
   // Check if it's an X-UI callback
@@ -644,7 +610,7 @@ bot.on('callback_query', async (query) => {
   }
 
   // Check if it's an admin callback
-  if (query.data.startsWith('admin_') || query.data.startsWith('admsrv') || query.data.startsWith('extend_days_') || query.data.startsWith('extend_gb_') || query.data.startsWith('confirm_delete_')) {
+  if (query.data.startsWith('admin_') || query.data.startsWith('admsrv') || query.data.startsWith('premcfg_') || query.data.startsWith('extend_days_') || query.data.startsWith('extend_gb_') || query.data.startsWith('confirm_delete_')) {
     return handleAdminCallback(bot, query);
   }
 
@@ -987,20 +953,43 @@ bot.on('message', async (msg) => {
   if (isDeletingKey(msg.from.id)) {
     clearKeyDelete(msg.from.id);
     const email = msg.text.trim();
-    const xuiClient = require('./vpn/xuiClient');
-    const { premiumClient } = require('./vpn/xuiClient');
+    const { getAllPanels, getClient: getPanelClient } = require('./vpn/panelManager');
     try {
-      let clients = await xuiClient.getAllClients();
-      let client = clients.find(c => c.email === email);
-      // Also search premium panel
-      if (!client && premiumClient) {
+      let client = null;
+      let panelName = '';
+
+      // Search ALL panels
+      const panels = getAllPanels();
+      for (const p of panels) {
         try {
-          const premClients = await premiumClient.getAllClients();
-          client = premClients.find(c => c.email === email);
+          const pc = getPanelClient(p.id);
+          const clients = await pc.getAllClients();
+          const found = clients.find(c => c.email === email);
+          if (found) {
+            client = found;
+            panelName = p.name;
+            break;
+          }
+        } catch (e) {
+          console.error(`Panel ${p.name} search error:`, e.message);
+        }
+      }
+
+      // Fallback: legacy xuiClient
+      if (!client) {
+        try {
+          const xuiClient = require('./vpn/xuiClient');
+          const clients = await xuiClient.getAllClients();
+          const found = clients.find(c => c.email === email);
+          if (found) {
+            client = found;
+            panelName = 'Default';
+          }
         } catch (e) { /* ignore */ }
       }
+
       if (!client) {
-        await bot.sendMessage(msg.chat.id, `❌ Client <code>${email}</code> not found.`, { parse_mode: 'HTML' });
+        await bot.sendMessage(msg.chat.id, `❌ Client <code>${email}</code> not found in any panel.`, { parse_mode: 'HTML' });
         return;
       }
       const usedGB = ((client.up + client.down) / 1024 / 1024 / 1024).toFixed(2);
@@ -1009,7 +998,8 @@ bot.on('message', async (msg) => {
         `🗑 <b>Delete Confirm</b>\n\n` +
         `<b>Email:</b> <code>${email}</code>\n` +
         `<b>Data:</b> ${usedGB}/${totalGB} GB\n` +
-        `<b>Inbound:</b> ${client.inboundRemark}\n\n` +
+        `<b>Panel:</b> ${panelName}\n` +
+        `<b>Inbound:</b> ${client.inboundRemark || 'N/A'}\n\n` +
         `ဖျက်မှာ သေချာလား?`,
         {
           parse_mode: 'HTML',
@@ -1066,6 +1056,14 @@ bot.on('message', async (msg) => {
     return;
   }
 
+  // Server admin message handling
+  const serverHandled = await handleServerAdminMessage(bot, msg);
+  if (serverHandled) return;
+
+  // Panel admin message handling
+  const panelHandled = await handlePanelAdminMessage(bot, msg);
+  if (panelHandled) return;
+
   // XUI admin message handling
   const handled = await handleXuiAdminMessage(bot, msg);
   if (handled) return;
@@ -1075,7 +1073,7 @@ bot.on('message', async (msg) => {
 bot.on('message', async (msg) => {
   if (!msg.text || msg.text.startsWith('/')) return;
   if (isBanned(msg.from.id)) return;
-  if (isAdmin(msg.from.id) && (isBroadcasting(msg.from.id) || isResettingTrial(msg.from.id) || isExtendingKey(msg.from.id) || isSettingCustomMsg(msg.from.id) || isDeletingKey(msg.from.id) || isSettingTrialGB(msg.from.id) || isSettingMaintMsg(msg.from.id) || isAddingCredit(msg.from.id) || isSettingRefCredit(msg.from.id) || isSettingCreditRate(msg.from.id) || isSettingCreditInbound(msg.from.id) || isSettingPremPlan(msg.from.id) || isCreatingCoupon(msg.from.id) || isDeletingCoupon(msg.from.id) || isBanningWithReason(msg.from.id) || getAdminState(msg.from.id))) return;
+  if (isAdmin(msg.from.id) && (isBroadcasting(msg.from.id) || isResettingTrial(msg.from.id) || isExtendingKey(msg.from.id) || isSettingCustomMsg(msg.from.id) || isDeletingKey(msg.from.id) || isSettingTrialGB(msg.from.id) || isSettingMaintMsg(msg.from.id) || isAddingCredit(msg.from.id) || isSettingRefCredit(msg.from.id) || isSettingCreditRate(msg.from.id) || isSettingCreditInbound(msg.from.id) || isSettingPremPlan(msg.from.id) || isCreatingCoupon(msg.from.id) || isDeletingCoupon(msg.from.id) || isBanningWithReason(msg.from.id) || getAdminState(msg.from.id) || isPanelAdminState(msg.from.id) || isServerAdminState(msg.from.id))) return;
 
   // Coupon redeem handler
   if (isCouponRedeem(msg.from.id)) {

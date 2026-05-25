@@ -21,7 +21,7 @@ async function cleanupExpiredKeys(bot) {
           const expiredDaysAgo = (now - client.expiryTime) / (1000 * 60 * 60 * 24);
           if (expiredDaysAgo >= 3) {
             try {
-              await xuiClient.deleteClient(inbound.id, client.id);
+              await xuiClient.deleteClient(inbound.id, client.id, client.email);
               cleaned++;
               cleanedList.push(client.email);
 
