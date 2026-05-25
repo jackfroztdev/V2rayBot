@@ -3,7 +3,8 @@ const crypto = require('crypto');
 
 class XUIClient {
   constructor(config = {}) {
-    this.baseUrl = config.url || process.env.XUI_PANEL_URL || '';
+    // Strip trailing slash to avoid double-slash in URL paths
+    this.baseUrl = (config.url || process.env.XUI_PANEL_URL || '').replace(/\/+$/, '');
     this.username = config.username || process.env.XUI_USERNAME || '';
     this.password = config.password || process.env.XUI_PASSWORD || '';
     this.cookie = null;
@@ -86,11 +87,21 @@ class XUIClient {
 
   // ─── Server Status ─────────────────────────────────────────
   async getServerStatus() {
+    // Try xui/API path first (older x-ui), fallback to panel/api (3x-ui)
+    try {
+      const res = await this.request('get', '/xui/API/server/status');
+      if (res && res.success) return res;
+    } catch (e) { /* fallback */ }
     return await this.request('get', '/panel/api/server/status');
   }
 
   // ─── Inbound Management ────────────────────────────────────
   async listInbounds() {
+    // Try xui/API path first (older x-ui), fallback to panel/api (3x-ui)
+    try {
+      const res = await this.request('get', '/xui/API/inbounds/');
+      if (res && res.success) return res;
+    } catch (e) { /* fallback */ }
     return await this.request('get', '/panel/api/inbounds/list');
   }
 
@@ -103,10 +114,18 @@ class XUIClient {
   }
 
   async addInbound(inboundConfig) {
+    try {
+      const res = await this.request('post', '/xui/inbound/add', inboundConfig);
+      if (res && res.success) return res;
+    } catch (e) { /* fallback */ }
     return await this.request('post', '/panel/api/inbounds/add', inboundConfig);
   }
 
   async deleteInbound(id) {
+    try {
+      const res = await this.request('post', `/xui/inbound/del/${id}`);
+      if (res && res.success) return res;
+    } catch (e) { /* fallback */ }
     return await this.request('post', `/panel/api/inbounds/del/${id}`);
   }
 
@@ -116,6 +135,10 @@ class XUIClient {
       id: inboundId,
       settings: JSON.stringify({ clients: [clientConfig] }),
     };
+    try {
+      const res = await this.request('post', '/xui/inbound/addClient', data);
+      if (res && res.success) return res;
+    } catch (e) { /* fallback */ }
     return await this.request('post', '/panel/api/inbounds/addClient', data);
   }
 
@@ -124,8 +147,13 @@ class XUIClient {
     const identifier = clientUuid || email;
     if (!identifier) throw new Error('No client identifier (uuid or email) provided');
 
-    // Try normal delete first
-    const result = await this.request('post', `/panel/api/inbounds/${inboundId}/delClient/${identifier}`);
+    // Try normal delete first (try both API paths)
+    let result;
+    try {
+      result = await this.request('post', `/xui/inbound/${inboundId}/delClient/${identifier}`);
+    } catch (e) {
+      result = await this.request('post', `/panel/api/inbounds/${inboundId}/delClient/${identifier}`);
+    }
     if (result.success) return result;
 
     // If failed (e.g. last client in inbound), remove client from settings manually
@@ -145,6 +173,10 @@ class XUIClient {
 
     const updateData = { ...inbound, settings: JSON.stringify(settings) };
     delete updateData.clientStats;
+    try {
+      const res = await this.request('post', `/xui/inbound/update/${inboundId}`, updateData);
+      if (res && res.success) return res;
+    } catch (e) { /* fallback */ }
     return await this.request('post', `/panel/api/inbounds/update/${inboundId}`, updateData);
   }
 
@@ -165,10 +197,18 @@ class XUIClient {
 
     const updateData = { ...inbound, settings: JSON.stringify(settings) };
     delete updateData.clientStats;
+    try {
+      const res = await this.request('post', `/xui/inbound/update/${inboundId}`, updateData);
+      if (res && res.success) return res;
+    } catch (e) { /* fallback */ }
     return await this.request('post', `/panel/api/inbounds/update/${inboundId}`, updateData);
   }
 
   async resetClientTraffic(inboundId, email) {
+    try {
+      const res = await this.request('post', `/xui/inbound/${inboundId}/resetClientTraffic/${email}`);
+      if (res && res.success) return res;
+    } catch (e) { /* fallback */ }
     return await this.request('post', `/panel/api/inbounds/${inboundId}/resetClientTraffic/${email}`);
   }
 
