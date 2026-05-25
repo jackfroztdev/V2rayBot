@@ -2230,6 +2230,26 @@ async function handleAdminCallback(bot, query) {
     }
   }
 
+
+  // ─── Welcome Message Editor ──────────────────────────────────────────────────
+  if (data === 'admin_welcome_edit') {
+    const { getWelcomeRaw } = require('../middleware/welcomeManager');
+    const current = getWelcomeRaw();
+    broadcastState[`welcome_${userId}`] = true;
+    return bot.editMessageText(
+      '<b>✏️ Welcome Message Editor</b>\n\n' +
+      '<b>Current message:</b>\n' +
+      '<pre>' + current.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>\n\n' +
+      '📝 New message ရိုက်ပေးပါ\n' +
+      '(Use <code>{name}</code> for user name)\n\n' +
+      'Type /cancel to cancel.',
+      {
+        chat_id: chatId, message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: getAdminBackKeyboard(),
+      }
+    );
+  }
   return false;
 }
 
@@ -2239,6 +2259,12 @@ function isBroadcasting(userId) {
 
 function clearBroadcast(userId) {
   delete broadcastState[String(userId)];
+}
+function isWelcomeEdit(userId) {
+  return broadcastState[`welcome_${String(userId)}`] === true;
+}
+function clearWelcomeEdit(userId) {
+  delete broadcastState[`welcome_${String(userId)}`];
 }
 
 function isResettingTrial(userId) {
@@ -2448,6 +2474,8 @@ async function handleServerAdminMessage(bot, msg) {
 }
 
 module.exports = {
+  isWelcomeEdit,
+  clearWelcomeEdit,
   handleAdminCallback,
   isBroadcasting, clearBroadcast,
   isResettingTrial, clearTrialReset,

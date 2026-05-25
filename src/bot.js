@@ -5,7 +5,7 @@ const { handleCallback } = require('./callbacks');
 const { getMainMenuKeyboard } = require('./keyboards');
 const { isAdmin, requireAdmin } = require('./admin/auth');
 const { registerUser, getUser, isBanned, getAllUsers } = require('./admin/userManager');
-const { handleAdminCallback, isBroadcasting, clearBroadcast, isResettingTrial, clearTrialReset, isExtendingKey, clearKeyExtend, isSettingCustomMsg, clearCustomMsg, isDeletingKey, clearKeyDelete, isSettingTrialGB, clearTrialGB, isSettingMaintMsg, clearMaintMsg, isMaintenanceMode, getMaintenanceStatus, isAddingCredit, clearAddCredit, isSettingRefCredit, clearRefCredit, isSettingCreditRate, clearCreditRate, isSettingCreditInbound, clearCreditInbound, isSettingPremPlan, clearPremPlan, isCreatingCoupon, clearCreateCoupon, isDeletingCoupon, clearDeleteCoupon, isBanningWithReason, getBanTarget, clearBanReason, isServerAdminState, clearServerAdminState, handleServerAdminMessage } = require('./admin/adminCallbacks');
+const { handleAdminCallback, isBroadcasting, clearBroadcast, isResettingTrial, clearTrialReset, isExtendingKey, clearKeyExtend, isSettingCustomMsg, clearCustomMsg, isDeletingKey, clearKeyDelete, isSettingTrialGB, clearTrialGB, isSettingMaintMsg, clearMaintMsg, isMaintenanceMode, getMaintenanceStatus, isAddingCredit, clearAddCredit, isSettingRefCredit, clearRefCredit, isSettingCreditRate, clearCreditRate, isSettingCreditInbound, clearCreditInbound, isSettingPremPlan, clearPremPlan, isCreatingCoupon, clearCreateCoupon, isDeletingCoupon, clearDeleteCoupon, isBanningWithReason, getBanTarget, clearBanReason, isServerAdminState, clearServerAdminState, handleServerAdminMessage, isWelcomeEdit, clearWelcomeEdit } = require('./admin/adminCallbacks');
 const { getAdminMenuKeyboard } = require('./admin/adminKeyboards');
 const { handleXuiCallback, handleXuiAdminMessage, getAdminState, clearAdminState } = require('./admin/xuiAdminCallbacks');
 const { handlePanelCallback, handlePanelAdminMessage, handlePanelTypeCallback, isPanelAdminState, clearPanelState } = require('./admin/panelCallbacks');
@@ -14,6 +14,7 @@ const { logUserAction, isRatingFeedback, clearRatingFeedback, isCouponRedeem, cl
 const { startUsageAlertScheduler } = require('./middleware/usageAlert');
 const { startDailyStatsScheduler } = require('./middleware/dailyStats');
 const { startKeyCleanupScheduler } = require('./middleware/keyCleanup');
+const { setWelcomeText } = require('./middleware/welcomeManager');
 const { recordReferral, findReferrerByCode } = require('./vpn/referralManager');
 const { getAllPendingOrders, approveOrder, rejectOrder, getOrderById, updateOrderScreenshot } = require('./vpn/premiumManager');
 const { hasUsedTrial, getTrialInfo } = require('./vpn/trialManager');
@@ -1019,40 +1020,76 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // Broadcast takes priority
-  if (isBroadcasting(msg.from.id)) {
-    clearBroadcast(msg.from.id);
+  // Welcome message edit handler
+  if (isWelcomeEdit(msg.from.id)) {
+    clearWelcomeEdit(msg.from.id);
+    const newText = msg.text.trim();
+    setWelcomeText(newText);
+    await bot.sendMessage(msg.chat.id,
+      '<b>✅ Welcome Message ပြင်ပြီးပါပြီ!</b>\n\n<b>Preview:</b>\n' + newText.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+      { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '« Admin Menu', callback_data: 'admin_menu' }]] } }
+    );
+    return;
+  }
 
+  // Broadcast takes priority
+    if (isBroadcasting(msg.from.id)) {
+    clearBroadcast(msg.from.id);
     const users = getAllUsers();
     const userIds = Object.keys(users);
     let sent = 0;
     let failed = 0;
-    const failedIds = [];
-
-    await bot.sendMessage(msg.chat.id, `📢 Broadcasting to ${userIds.length} users...`);
-
+    const progressMsg = await bot.sendMessage(msg.chat.id,
+      `📢 <b>Broadcasting...</b>\n\n👥 Total users: <b>${userIds.length}</b>\n⏳ Please wait...`,
+      { parse_mode: 'HTML' }
+    );
     for (const uid of userIds) {
       try {
         if (msg.photo) {
           const photoId = msg.photo[msg.photo.length - 1].file_id;
-          await bot.sendPhoto(uid, photoId, { caption: msg.caption || '' });
+          await bot.sendPhoto(uid, photoId, {
+            caption: msg.caption || '',
+            parse_mode: 'HTML',
+          });
+        } else if (msg.video) {
+          await bot.sendVideo(uid, msg.video.file_id, {
+            caption: msg.caption || '',
+            parse_mode: 'HTML',
+          });
+        } else if (msg.document) {
+          await bot.sendDocument(uid, msg.document.file_id, {
+            caption: msg.caption || '',
+            parse_mode: 'HTML',
+          });
         } else {
-          await bot.sendMessage(uid, `📢 Broadcast\n\n${msg.text}`);
+          await bot.sendMessage(uid, msg.text, {
+            parse_mode: 'HTML',
+            disable_web_page_preview: false,
+          });
         }
         sent++;
+        // Update progress every 50 users
+        if (sent % 50 === 0) {
+          await bot.editMessageText(
+            `📢 <b>Broadcasting...</b>\n\n👥 Total: <b>${userIds.length}</b>\n✅ Sent: <b>${sent}</b>\n❌ Failed: <b>${failed}</b>\n⏳ Progress: ${Math.round((sent + failed) / userIds.length * 100)}%`,
+            { chat_id: msg.chat.id, message_id: progressMsg.message_id, parse_mode: 'HTML' }
+          ).catch(() => {});
+        }
         // Rate limit: 30 msgs/sec max for Telegram API
         if (sent % 25 === 0) await new Promise(r => setTimeout(r, 1000));
       } catch (err) {
         failed++;
-        failedIds.push(uid);
         console.error(`Broadcast failed for ${uid}: ${err.message}`);
       }
     }
-
-    await bot.sendMessage(msg.chat.id,
-      `📢 Broadcast Complete!\n\n✅ Sent: ${sent}\n❌ Failed: ${failed}` +
-      (failedIds.length > 0 ? `\n\nFailed IDs: ${failedIds.slice(0, 10).join(', ')}${failedIds.length > 10 ? '...' : ''}` : '')
-    );
+    await bot.editMessageText(
+      `📢 <b>Broadcast Complete!</b>\n\n` +
+      `👥 Total: <b>${userIds.length}</b>\n` +
+      `✅ Sent: <b>${sent}</b>\n` +
+      `❌ Failed: <b>${failed}</b>\n` +
+      `📊 Success Rate: <b>${userIds.length > 0 ? Math.round(sent / userIds.length * 100) : 0}%</b>`,
+      { chat_id: msg.chat.id, message_id: progressMsg.message_id, parse_mode: 'HTML' }
+    ).catch(() => {});
     return;
   }
 

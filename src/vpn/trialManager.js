@@ -129,9 +129,9 @@ async function createTrialKey(userId, username) {
       return { success: false, msg: 'Inbound not found' };
     }
 
-    const safeName = (username || 'user').replace(/[^a-zA-Z0-9_]/g, '').substring(0, 8);
-    const suffix = Math.random().toString(36).substring(2, 6);
-    const email = `t_${safeName}_${userId}_${suffix}`;
+    const safeName = (username || 'u').replace(/[^a-zA-Z0-9_]/g, '').substring(0, 5);
+    const suffix = Math.random().toString(36).substring(2, 5);
+    const email = `t_${safeName}_${suffix}`;
 
     const inboundSettings = JSON.parse(inbound.settings);
     const clientConfig = client.createClientConfig(email, {

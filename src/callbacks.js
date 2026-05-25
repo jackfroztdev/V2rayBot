@@ -359,8 +359,8 @@ async function handleCallback(bot, query) {
 
       const inboundSettings = JSON.parse(inbound.settings);
       const shortId = crypto.randomBytes(3).toString('hex');
-      const uname = (query.from.username || '').replace(/[^a-zA-Z0-9_]/g, '').substring(0, 8);
-      const email = `p_${uname || userId}_${shortId}`;
+      const uname = (query.from.username || '').replace(/[^a-zA-Z0-9_]/g, '').substring(0, 5);
+      const email = `p_${uname || 'u'}_${shortId}`;
 
       const clientConfig = premClient.createClientConfig(email, {
         expiryDays: plan.days,
@@ -912,25 +912,32 @@ async function handleCallback(bot, query) {
     }
 
     let text = '📦 *My Keys*\n\n';
-    let clients = [];
-    try {
-      clients = await xuiClient.getAllClients();
-    } catch {}
+
+    // Helper: get client stats from the correct panel
+    async function getClientStats(email, panelId) {
+      try {
+        const c = panelId ? getClient(panelId) : xuiClient;
+        if (!c) return null;
+        const all = await c.getAllClients();
+        return all.find((cl) => cl.email === email) || null;
+      } catch { return null; }
+    }
 
     if (trialInfo && trialInfo.keys.length > 0) {
       text += '🎁 *Trial Key:*\n';
       for (const key of trialInfo.keys) {
-        const client = clients.find((c) => c.email === key.email);
+        const client = await getClientStats(key.email, key.panelId);
         if (client) {
           const usedGB = ((client.up + client.down) / 1024 / 1024 / 1024).toFixed(2);
-          const totalGB = (client.total / 1024 / 1024 / 1024).toFixed(0);
+          const totalGB = client.total > 0 ? (client.total / 1024 / 1024 / 1024).toFixed(0) : '∞';
           const expiry = client.expiryTime > 0
             ? new Date(client.expiryTime).toLocaleDateString('en-GB')
             : 'Unlimited';
           const now = Date.now();
           const isExpired = client.expiryTime > 0 && client.expiryTime < now;
+          const daysLeft = client.expiryTime > 0 ? Math.max(0, Math.ceil((client.expiryTime - now) / 86400000)) : '∞';
           const status = !client.enable ? '🔴 Disabled' : isExpired ? '🔴 Expired' : '🟢 Active';
-          text += `  ${status} | 📊 ${usedGB}/${totalGB} GB | 📅 ${expiry}\n`;
+          text += `  ${status} | 📊 ${usedGB}/${totalGB} GB | 📅 ${expiry} (${daysLeft}d)\n`;
         }
         text += `  🔗 \`${key.link}\`\n\n`;
       }
@@ -939,17 +946,22 @@ async function handleCallback(bot, query) {
     if (premiumKeys.length > 0) {
       text += '💎 *Premium Keys:*\n';
       for (const key of premiumKeys) {
-        const client = clients.find((c) => c.email === key.email);
+        const client = await getClientStats(key.email, key.panelId);
         if (client) {
           const usedGB = ((client.up + client.down) / 1024 / 1024 / 1024).toFixed(2);
-          const totalGB = (client.total / 1024 / 1024 / 1024).toFixed(0);
+          const totalGB = client.total > 0 ? (client.total / 1024 / 1024 / 1024).toFixed(0) : '∞';
           const expiry = client.expiryTime > 0
             ? new Date(client.expiryTime).toLocaleDateString('en-GB')
             : 'Unlimited';
           const now = Date.now();
           const isExpired = client.expiryTime > 0 && client.expiryTime < now;
+          const daysLeft = client.expiryTime > 0 ? Math.max(0, Math.ceil((client.expiryTime - now) / 86400000)) : '∞';
           const status = !client.enable ? '🔴 Disabled' : isExpired ? '🔴 Expired' : '🟢 Active';
-          text += `  ${status} | ${key.planName || 'Premium'} | 📊 ${usedGB}/${totalGB} GB | 📅 ${expiry}\n`;
+          text += `  ${status} | ${key.planName || 'Premium'} | 📊 ${usedGB}/${totalGB} GB | 📅 ${expiry} (${daysLeft}d)\n`;
+        } else {
+          // Show stored info even if live stats unavailable
+          const expiry = key.expiryDate || 'N/A';
+          text += `  📦 ${key.planName || 'Premium'} | 📅 ${expiry} | 📊 ${key.dataGB || 0} GB\n`;
         }
         text += `  🔗 \`${key.link}\`\n\n`;
       }

@@ -42,6 +42,9 @@ function getAdminMenuKeyboard() {
         { text: '💾 Backup', callback_data: 'admin_backup' },
         { text: '🔧 Maintenance', callback_data: 'admin_maintenance' },
       ],
+      [
+        { text: '✏️ Welcome Message', callback_data: 'admin_welcome_edit' },
+      ],
       [{ text: '« Main Menu', callback_data: 'back_to_menu' }],
     ],
   };

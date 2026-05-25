@@ -1,4 +1,5 @@
 const { getMainMenuKeyboard } = require('./keyboards');
+const { getWelcomeText } = require('./middleware/welcomeManager');
 
 function handleCommand(bot, msg, command) {
   const chatId = msg.chat.id;
@@ -7,14 +8,7 @@ function handleCommand(bot, msg, command) {
   switch (command) {
     case 'start':
       bot.sendMessage(chatId,
-        `🔐 *VPN Key Bot*\n\n` +
-        `မင်္ဂလာပါ ${userName}! 👋\n\n` +
-        `ဒီ Bot မှာ VPN Key ထုတ်ယူနိုင်ပါတယ်။\n\n` +
-        `🎁 *Trial Key* — Free trial key ထုတ်ယူရန်\n` +
-        `📦 *My Key* — ယူထားတဲ့ key ပြန်ကြည့်ရန်\n` +
-        `👤 *My Account* — ကိုယ့်အကောင့် အချက်အလက်\n` +
-        `📞 *Admin ဆက်သွယ်ရန်* — အကူအညီ တောင်းခံရန်\n\n` +
-        `အောက်က menu ကနေ ရွေးချယ်ပါ 👇`,
+        getWelcomeText(userName),
         { parse_mode: 'Markdown', reply_markup: getMainMenuKeyboard() }
       );
       break;
@@ -34,7 +28,7 @@ function handleCommand(bot, msg, command) {
       break;
 
     case 'menu':
-      bot.sendMessage(chatId, '🔐 *VPN Key Bot*\n\nရွေးချယ်ပါ:', {
+      bot.sendMessage(chatId, getWelcomeText(userName), {
         parse_mode: 'Markdown',
         reply_markup: getMainMenuKeyboard(),
       });
