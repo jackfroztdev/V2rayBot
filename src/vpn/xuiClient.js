@@ -92,8 +92,8 @@ class XUIClient {
 
   // ─── Inbound Management ────────────────────────────────────
   async listInbounds() {
-    // Returns array directly under 'obj' key
-    const result = await this.request('get', '/xui/API/inbounds');
+    // Use trailing slash to avoid 301 redirect (axios doesn't follow redirects by default)
+    const result = await this.request('get', '/xui/API/inbounds/');
     // Normalize response: wrap array in {success, obj} if needed
     if (Array.isArray(result)) {
       return { success: true, obj: result };
