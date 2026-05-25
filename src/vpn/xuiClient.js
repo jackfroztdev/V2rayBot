@@ -131,15 +131,33 @@ class XUIClient {
 
   // ─── Client Management ─────────────────────────────────────
   async addClient(inboundId, clientConfig) {
-    const data = {
+    // First try 3x-ui style addClient endpoint (settings as JSON string)
+    const dataStr = {
       id: inboundId,
       settings: JSON.stringify({ clients: [clientConfig] }),
     };
     try {
-      const res = await this.request('post', '/xui/inbound/addClient', data);
+      const res = await this.request('post', '/panel/api/inbounds/addClient', dataStr);
+      if (res && res.success) return res;
+    } catch (e) { /* fallback to update method */ }
+
+    // Fallback: older x-ui doesn't support addClient endpoint
+    // Instead, fetch the inbound and update it with the new client appended
+    const inbound = await this.getInbound(inboundId);
+    if (!inbound) throw new Error('Inbound not found');
+
+    const settings = JSON.parse(inbound.settings);
+    if (!settings.clients) settings.clients = [];
+    settings.clients.push(clientConfig);
+
+    const updateData = { ...inbound, settings: JSON.stringify(settings) };
+    delete updateData.clientStats;
+
+    try {
+      const res = await this.request('post', `/xui/inbound/update/${inboundId}`, updateData);
       if (res && res.success) return res;
     } catch (e) { /* fallback */ }
-    return await this.request('post', '/panel/api/inbounds/addClient', data);
+    return await this.request('post', `/panel/api/inbounds/update/${inboundId}`, updateData);
   }
 
   async deleteClient(inboundId, clientUuid, email) {
